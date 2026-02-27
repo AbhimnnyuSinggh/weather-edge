@@ -1,7 +1,7 @@
 """
 commands.py — Telegram Command Handlers
 
-Handles all Telegram commands: /status, /stations, /week, /today,
+Handles all Telegram commands: /start, /status, /stations, /week, /today,
 /data, /pause, /resume, /help
 """
 
@@ -30,6 +30,23 @@ def is_paused() -> bool:
 # ---------------------------------------------------------------------------
 # Command handlers
 # ---------------------------------------------------------------------------
+async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Welcome message when user first starts the bot."""
+    msg = (
+        "🌤️ Weather-Edge Bot\n\n"
+        "I monitor Polymarket weather temperature markets and "
+        "send you trading signals based on METAR data, model forecasts, "
+        "and probability analysis.\n\n"
+        "Commands:\n"
+        "/status — Current wallet & positions\n"
+        "/stations — Active stations with METAR\n"
+        "/today — Today's trades\n"
+        "/help — All commands\n\n"
+        "Bot is running. Signals will appear here automatically."
+    )
+    await update.message.reply_text(msg)
+
+
 async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Show current wallet status, positions, and P&L."""
     try:
@@ -208,6 +225,7 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ---------------------------------------------------------------------------
 def register_handlers(app: Application):
     """Register all command handlers with the Telegram application."""
+    app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("stations", cmd_stations))
     app.add_handler(CommandHandler("week", cmd_week))
