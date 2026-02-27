@@ -18,6 +18,7 @@ from dateutil import parser as dateparser
 logger = logging.getLogger("markets")
 
 GAMMA_API_URL = "https://gamma-api.polymarket.com/events"
+GAMMA_EVENT_SLUG_URL = "https://gamma-api.polymarket.com/events/slug"
 USER_AGENT = "WeatherEdgeBot/1.0"
 
 # Known city → ICAO mappings (from resolution rules research)
@@ -25,6 +26,7 @@ CITY_TO_STATION = {
     "seoul": "RKSI",
     "incheon": "RKSI",
     "new york": "KLGA",
+    "new york city": "KLGA",
     "nyc": "KLGA",
     "miami": "KMIA",
     "chicago": "KORD",
@@ -34,6 +36,50 @@ CITY_TO_STATION = {
     "dallas": "KDFW",
     "atlanta": "KATL",
     "seattle": "KSEA",
+    "wellington": "NZWN",
+    "toronto": "CYYZ",
+    "paris": "LFPG",
+}
+
+# City slug names used in Polymarket URLs
+# Format: "highest-temperature-in-{slug_city}-on-{month}-{day}-{year}"
+CITY_SLUG_NAMES = {
+    "RKSI": "seoul",
+    "KLGA": "nyc",
+    "KMIA": "miami",
+    "KORD": "chicago",
+    "EGLC": "london",
+    "LTAC": "ankara",
+    "SAEZ": "buenos-aires",
+    "KDFW": "dallas",
+    "KATL": "atlanta",
+    "KSEA": "seattle",
+    "NZWN": "wellington",
+    "CYYZ": "toronto",
+    "LFPG": "paris",
+}
+
+# Friendly city names for display
+STATION_CITY_NAMES = {
+    "RKSI": "Seoul",
+    "KLGA": "NYC",
+    "KMIA": "Miami",
+    "KORD": "Chicago",
+    "EGLC": "London",
+    "LTAC": "Ankara",
+    "SAEZ": "Buenos Aires",
+    "KDFW": "Dallas",
+    "KATL": "Atlanta",
+    "KSEA": "Seattle",
+    "NZWN": "Wellington",
+    "CYYZ": "Toronto",
+    "LFPG": "Paris",
+}
+
+MONTH_NAMES = {
+    1: "january", 2: "february", 3: "march", 4: "april",
+    5: "may", 6: "june", 7: "july", 8: "august",
+    9: "september", 10: "october", 11: "november", 12: "december",
 }
 
 
@@ -70,98 +116,113 @@ class MarketGroup:
 
 
 # ---------------------------------------------------------------------------
-# Fetch active weather markets
+# Build event slugs for known stations and dates
+# ---------------------------------------------------------------------------
+def _build_event_slugs(station_ids: List[str], target_dates: List[date]
+                        ) -> List[Tuple[str, str, date]]:
+    """
+    Build Gamma API event slugs for each station/date combo.
+    Returns: [(slug, station, target_date), ...]
+    """
+    slugs = []
+    for station in station_ids:
+        slug_city = CITY_SLUG_NAMES.get(station)
+        if not slug_city:
+            continue
+        for d in target_dates:
+            month_name = MONTH_NAMES.get(d.month, "")
+            slug = f"highest-temperature-in-{slug_city}-on-{month_name}-{d.day}-{d.year}"
+            slugs.append((slug, station, d))
+    return slugs
+
+
+# ---------------------------------------------------------------------------
+# Fetch active weather markets — slug-based lookup
 # ---------------------------------------------------------------------------
 async def fetch_active_weather_markets(known_stations: List[str] = None
                                         ) -> Dict[str, MarketGroup]:
     """
-    Fetch all active weather events from Gamma API.
+    Fetch daily temperature events by constructing slugs directly.
+    Polymarket uses: "highest-temperature-in-{city}-on-{month}-{day}-{year}"
     Returns: {station_date_key: MarketGroup}
     """
-    params = {
-        "tag": "climate",
-        "active": "true",
-        "closed": "false",
-        "limit": 100,
-    }
+    from datetime import timedelta
+    today = date.today()
+    tomorrow = today + timedelta(days=1)
+    target_dates = [today, tomorrow]
+
+    stations = known_stations or list(CITY_SLUG_NAMES.keys())
+    slugs = _build_event_slugs(stations, target_dates)
 
     results: Dict[str, MarketGroup] = {}
-    new_cities: List[str] = []
 
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                GAMMA_API_URL, params=params,
-                headers={"User-Agent": USER_AGENT},
-                timeout=aiohttp.ClientTimeout(total=20),
-            ) as resp:
-                if resp.status != 200:
-                    logger.error("Gamma API HTTP %d", resp.status)
-                    return results
-                events = await resp.json()
-    except Exception as e:
-        logger.error("Gamma API error: %s", e)
-        return results
-
-    if not isinstance(events, list):
-        events = []
-
-    for event in events:
-        try:
-            group = _parse_event(event)
-            if group is None:
+    async with aiohttp.ClientSession() as session:
+        for slug, station, target_date in slugs:
+            try:
+                url = f"{GAMMA_EVENT_SLUG_URL}/{slug}"
+                async with session.get(
+                    url,
+                    headers={"User-Agent": USER_AGENT},
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    if resp.status == 404:
+                        # Market not created yet for this date
+                        continue
+                    if resp.status != 200:
+                        logger.warning("Gamma slug fetch HTTP %d for %s", resp.status, slug)
+                        continue
+                    event = await resp.json()
+            except Exception as e:
+                logger.error("Gamma slug fetch error for %s: %s", slug, e)
                 continue
 
-            # Check if this is a known station
-            if known_stations and group.station not in known_stations:
-                if group.station != "UNKNOWN":
-                    new_cities.append(group.city)
-                continue
+            try:
+                group = _parse_event(event, station)
+                if group and group.bins:
+                    key = f"{station}_{target_date.isoformat()}"
+                    results[key] = group
+                    logger.info(
+                        "Found market: %s %s — %d bins",
+                        station, target_date, len(group.bins),
+                    )
+            except Exception as e:
+                logger.error("Event parse error for %s: %s", slug, e)
 
-            key = f"{group.station}_{group.target_date.isoformat()}"
-            results[key] = group
-        except Exception as e:
-            logger.error("Event parse error: %s — %s",
-                         event.get("title", "?")[:50], e)
-
-    if new_cities:
-        logger.info("New cities detected: %s", new_cities)
-
+    logger.info("Markets fetched: %d events across %d stations",
+                len(results), len(stations))
     return results
 
 
 # ---------------------------------------------------------------------------
 # Event parsing
 # ---------------------------------------------------------------------------
-def _parse_event(event: dict) -> Optional[MarketGroup]:
+def _parse_event(event: dict, station: str = None) -> Optional[MarketGroup]:
     """Parse a Gamma API event into a MarketGroup."""
     title = event.get("title", "")
     if not title:
         return None
 
-    # Filter: only temperature-related weather events
-    title_lower = title.lower()
-    if not any(kw in title_lower for kw in [
-        "temperature", "temp", "high", "°f", "°c", "degrees"
-    ]):
-        # Not a temperature market — could be rain, wind, etc.
-        return None
-
     # Extract city and date from title
     city, target_date = _parse_title(title)
-    if not city or not target_date:
+    if not target_date:
         return None
 
-    # Map city to station
-    station = map_city_to_station(city)
+    # Use provided station or map from city
+    if not station:
+        station = map_city_to_station(city) if city else "UNKNOWN"
+
+    # Use known city name if station provided
+    if not city:
+        city = STATION_CITY_NAMES.get(station, "Unknown")
 
     # Parse resolution source from description
     description = event.get("description", "")
     resolution_source = _parse_resolution_source(description)
 
     # Determine unit from title or description
+    title_lower = title.lower()
     unit = "F"
-    if "°c" in title_lower or "celsius" in title_lower:
+    if "°c" in title_lower or "celsius" in title_lower or "ºc" in title_lower:
         unit = "C"
 
     group = MarketGroup(
@@ -349,9 +410,11 @@ def parse_bin_from_title(title: str, unit: str = "F") -> Optional[BinInfo]:
     elif "°C" in title or "°c" in title:
         unit = "C"
 
-    # Edge bins: "50+" or "20-" or "above 50" or "below 20"
-    edge_above = re.search(r"(\d+)\s*\+", title) or re.search(
-        r"(?:above|over|more than)\s+(\d+)", title, re.IGNORECASE
+    # Edge bins: "50+" or "48°F or above" or "above 50"
+    edge_above = (
+        re.search(r"(\d+)\s*\+", title)
+        or re.search(r"(?:above|over|more than)\s+(\d+)", title, re.IGNORECASE)
+        or re.search(r"(\d+)\s*°[FfCc]?\s+or\s+above", title, re.IGNORECASE)
     )
     if edge_above:
         val = float(edge_above.group(1))
@@ -361,8 +424,11 @@ def parse_bin_from_title(title: str, unit: str = "F") -> Optional[BinInfo]:
             unit=unit, is_edge=True,
         )
 
-    edge_below = re.search(r"(\d+)\s*-\s*$", title) or re.search(
-        r"(?:below|under|less than)\s+(\d+)", title, re.IGNORECASE
+    # Edge bins: "20-" or "39°F or below" or "below 20"
+    edge_below = (
+        re.search(r"(\d+)\s*-\s*$", title)
+        or re.search(r"(?:below|under|less than)\s+(\d+)", title, re.IGNORECASE)
+        or re.search(r"(\d+)\s*°[FfCc]?\s+or\s+(?:below|less)", title, re.IGNORECASE)
     )
     if edge_below:
         val = float(edge_below.group(1))
