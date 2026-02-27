@@ -200,15 +200,16 @@ async def store_market_snapshot(market_data: dict):
     pool = await get_pool()
     async with pool.acquire() as conn:
         for key, group in market_data.items():
-            for mbin in group.get("bins", []):
+            # group is a MarketGroup dataclass
+            for mbin in group.bins:
                 last = await conn.fetchrow(
                     """
                     SELECT yes_price FROM market_snapshots
                     WHERE market_id=$1 ORDER BY captured_at DESC LIMIT 1
                     """,
-                    mbin.get("market_id", ""),
+                    mbin.market_id,
                 )
-                if last and abs((last["yes_price"] or 0) - mbin.get("yes_price", 0)) < 0.01:
+                if last and abs((last["yes_price"] or 0) - mbin.yes_price) < 0.01:
                     continue  # no meaningful change
                 await conn.execute(
                     """
@@ -217,14 +218,14 @@ async def store_market_snapshot(market_data: dict):
                          bin_low, bin_high, yes_price, volume)
                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
                     """,
-                    mbin.get("market_id", ""),
-                    group.get("station"),
-                    group.get("target_date"),
-                    mbin.get("bin_label", ""),
-                    mbin.get("bin_low"),
-                    mbin.get("bin_high"),
-                    mbin.get("yes_price", 0),
-                    mbin.get("volume"),
+                    mbin.market_id,
+                    group.station,
+                    group.target_date,
+                    mbin.bin.label,
+                    mbin.bin.low,
+                    mbin.bin.high,
+                    mbin.yes_price,
+                    mbin.volume_24h,
                 )
 
 

@@ -67,8 +67,13 @@ async def setup_telegram(config: dict) -> Application:
     commands.register_handlers(app)
     await app.initialize()
     await app.start()
+    # Wait for old instance to release the polling lock during redeploys
+    await asyncio.sleep(5)
     # Start polling in background (non-blocking)
-    await app.updater.start_polling(drop_pending_updates=True)
+    await app.updater.start_polling(
+        drop_pending_updates=True,
+        allowed_updates=["message"],
+    )
     logger.info("Telegram bot started")
     return app
 
@@ -136,7 +141,7 @@ async def main_loop(config: dict):
     station_ids = list(stations_cfg.keys())
 
     while True:
-        scan_start = datetime.utcnow()
+        scan_start = datetime.utcnow()  # noqa: DTZ003
         logger.info("--- Scan cycle start ---")
 
         try:
@@ -318,7 +323,7 @@ async def main_loop(config: dict):
                 pass
 
         # Sleep until next cycle
-        elapsed = (datetime.utcnow() - scan_start).total_seconds()
+        elapsed = (datetime.utcnow() - scan_start).total_seconds()  # noqa: DTZ003
         sleep_time = max(0, interval - elapsed)
         logger.info(
             "--- Scan cycle done (%.1fs) — sleeping %.0fs ---",
