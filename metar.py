@@ -126,10 +126,16 @@ def parse_metar(raw: dict) -> Optional[StationMETAR]:
     if not icao:
         return None
 
-    obs_time_str = raw.get("obsTime")
-    if obs_time_str:
-        observed_at = datetime.fromisoformat(obs_time_str.replace("Z", "+00:00"))
-        observed_at = observed_at.replace(tzinfo=None)  # store as naive UTC
+    obs_time_raw = raw.get("obsTime")
+    if obs_time_raw:
+        if isinstance(obs_time_raw, (int, float)):
+            # Unix timestamp (seconds since epoch)
+            observed_at = datetime.utcfromtimestamp(obs_time_raw)
+        elif isinstance(obs_time_raw, str):
+            observed_at = datetime.fromisoformat(obs_time_raw.replace("Z", "+00:00"))
+            observed_at = observed_at.replace(tzinfo=None)
+        else:
+            observed_at = datetime.utcnow()
     else:
         observed_at = datetime.utcnow()
 
