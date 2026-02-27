@@ -12,6 +12,8 @@ import os
 import sys
 from datetime import datetime, date
 
+from aiohttp import web
+
 import yaml
 
 # Try to use uvloop for better async performance (Linux/macOS)
@@ -326,12 +328,59 @@ async def main_loop(config: dict):
 
 
 # ---------------------------------------------------------------------------
+# Health check HTTP server (keeps Render free web service alive)
+# ---------------------------------------------------------------------------
+async def health_handler(request):
+    """Health check endpoint for Render / UptimeRobot."""
+    return web.Response(text="Weather-Edge Bot is running", status=200)
+
+
+async def status_handler(request):
+    """Quick status endpoint."""
+    uptime = (datetime.utcnow() - _boot_time).total_seconds() / 3600.0
+    return web.Response(
+        text=f"Weather-Edge Bot | Uptime: {uptime:.1f}h",
+        status=200,
+    )
+
+
+_boot_time = datetime.utcnow()
+
+
+async def run_health_server():
+    """Run a lightweight HTTP server on $PORT for Render."""
+    app = web.Application()
+    app.router.add_get("/", health_handler)
+    app.router.add_get("/health", health_handler)
+    app.router.add_get("/status", status_handler)
+
+    port = int(os.environ.get("PORT", 10000))
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    logger.info("Health check server started on port %d", port)
+
+    # Keep running forever
+    while True:
+        await asyncio.sleep(3600)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
-def main():
+async def run_all():
+    """Run health check server and main scan loop concurrently."""
     config = load_config()
     logger.info("Config loaded: %d stations", len(config.get("stations", {})))
-    asyncio.run(main_loop(config))
+    await asyncio.gather(
+        run_health_server(),
+        main_loop(config),
+    )
+
+
+def main():
+    asyncio.run(run_all())
 
 
 if __name__ == "__main__":
