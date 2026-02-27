@@ -196,7 +196,7 @@ async def get_latest_forecasts(station: str, target_date: date) -> List[asyncpg.
 # Market snapshot storage
 # ---------------------------------------------------------------------------
 async def store_market_snapshot(market_data: dict):
-    """Store all bin prices.  Only insert if any price changed >= 1c since last."""
+    """Store all bin prices.  Only insert if any price changed ≥1¢ since last."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         for key, group in market_data.items():
@@ -732,7 +732,7 @@ async def generate_daily_summary_text(wallet_state: dict) -> str:
         row = await conn.fetchrow("SELECT * FROM daily_summary WHERE date=$1", today)
 
     if not row:
-        return "No data for daily summary yet."
+        return "📋 No data for daily summary yet."
 
     trades_total = (row["trades_won"] or 0) + (row["trades_lost"] or 0) + (row["trades_void"] or 0)
     win_rate = (
@@ -743,10 +743,10 @@ async def generate_daily_summary_text(wallet_state: dict) -> str:
     sign = "+" if net >= 0 else ""
 
     return (
-        f"DAILY SUMMARY: {today}\n\n"
-        f"${row['starting_capital'] or 0:.2f} -> ${row['ending_capital'] or 0:.2f} "
+        f"📋 DAILY SUMMARY: {today}\n\n"
+        f"💰 ${row['starting_capital'] or 0:.2f} → ${row['ending_capital'] or 0:.2f} "
         f"({sign}${net:.2f})\n"
-        f"Trades: {trades_total} | Wins: {row['trades_won'] or 0} "
+        f"📊 Trades: {trades_total} | Wins: {row['trades_won'] or 0} "
         f"| Losses: {row['trades_lost'] or 0} ({win_rate}%)\n"
         f"Alerts sent: {row['alerts_sent'] or 0} | Skipped: {row['alerts_skipped'] or 0}"
     )
@@ -809,13 +809,13 @@ async def generate_weekly_report() -> str:
     )
 
     return (
-        f"WEEKLY REPORT: {week_ago} -- {date.today()}\n\n"
-        f"P&L: {sign}${total_pnl:.2f}\n"
-        f"{total} trades | {wins} wins | {losses} losses ({win_rate}%)\n\n"
+        f"📋 WEEKLY REPORT: {week_ago} — {date.today()}\n\n"
+        f"💰 P&L: {sign}${total_pnl:.2f}\n"
+        f"📊 {total} trades | {wins} wins | {losses} losses ({win_rate}%)\n\n"
         f"By type:\n{type_lines}\n"
         f"By station:\n{station_lines}\n"
-        f"Best: {best_str}\n"
-        f"Worst: {worst_str}"
+        f"🏆 Best: {best_str}\n"
+        f"💔 Worst: {worst_str}"
     )
 
 
