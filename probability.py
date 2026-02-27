@@ -122,13 +122,19 @@ async def calculate_bin_decay(station: str, metar_data: StationMETAR,
     decay: Dict[str, float] = {}
 
     for mbin in bins:
-        bin_info = mbin if hasattr(mbin, "low") else mbin.get("bin", mbin)
-        if hasattr(bin_info, "low"):
-            bin_low = bin_info.low
-            label = bin_info.label
+        # Handle MarketBin dataclass (has .bin.low) or dict
+        if hasattr(mbin, "bin") and hasattr(mbin.bin, "low"):
+            bin_low = mbin.bin.low
+            label = mbin.bin.label
+        elif hasattr(mbin, "low"):
+            bin_low = mbin.low
+            label = getattr(mbin, "label", "")
+        elif isinstance(mbin, dict):
+            inner = mbin.get("bin", mbin)
+            bin_low = inner.get("low", 0) if isinstance(inner, dict) else getattr(inner, "low", 0)
+            label = inner.get("label", "") if isinstance(inner, dict) else getattr(inner, "label", "")
         else:
-            bin_low = bin_info.get("low", 0)
-            label = bin_info.get("label", "")
+            continue
 
         if bin_low <= day_high:
             # Bin is at or below current high — not a tail

@@ -196,7 +196,7 @@ async def get_latest_forecasts(station: str, target_date: date) -> List[asyncpg.
 # Market snapshot storage
 # ---------------------------------------------------------------------------
 async def store_market_snapshot(market_data: dict):
-    """Store all bin prices.  Only insert if any price changed ≥1¢ since last."""
+    """Store all bin prices.  Only insert if any price changed >= 1c since last."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         for key, group in market_data.items():
@@ -273,6 +273,59 @@ async def get_trades_for_station_date(station: str, target_date: date) -> List[a
             "SELECT * FROM trades WHERE station=$1 AND target_date=$2",
             station, target_date,
         )
+
+
+async def get_capital_summary() -> dict:
+    """
+    Calculate capital status from trades table.
+    Returns: {total_profit, total_loss, deployed, open_positions: [...]}
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        # Profits from resolved winning trades
+        profit_row = await conn.fetchrow(
+            "SELECT COALESCE(SUM(profit_loss), 0) AS total "
+            "FROM trades WHERE resolved=TRUE AND outcome='win'"
+        )
+        total_profit = float(profit_row["total"]) if profit_row else 0.0
+
+        # Losses from resolved losing trades (profit_loss is negative)
+        loss_row = await conn.fetchrow(
+            "SELECT COALESCE(SUM(ABS(profit_loss)), 0) AS total "
+            "FROM trades WHERE resolved=TRUE AND outcome='loss'"
+        )
+        total_loss = float(loss_row["total"]) if loss_row else 0.0
+
+        # Currently deployed (open trades)
+        deployed_row = await conn.fetchrow(
+            "SELECT COALESCE(SUM(cost), 0) AS total "
+            "FROM trades WHERE resolved=FALSE"
+        )
+        deployed = float(deployed_row["total"]) if deployed_row else 0.0
+
+        # Open positions list
+        open_rows = await conn.fetch(
+            "SELECT * FROM trades WHERE resolved=FALSE ORDER BY opened_at DESC"
+        )
+        open_positions = []
+        for r in open_rows:
+            open_positions.append({
+                "market_id": r.get("market_id", r.get("id", "")),
+                "station": r["station"],
+                "target_date": r["target_date"],
+                "bin_label": r["bin_label"],
+                "side": r["side"],
+                "shares": float(r["shares"]),
+                "entry_price": float(r["entry_price"]),
+                "cost": float(r["cost"]),
+            })
+
+    return {
+        "total_profit": total_profit,
+        "total_loss": total_loss,
+        "deployed": deployed,
+        "open_positions": open_positions,
+    }
 
 
 async def get_total_trades_count() -> int:
@@ -679,7 +732,7 @@ async def generate_daily_summary_text(wallet_state: dict) -> str:
         row = await conn.fetchrow("SELECT * FROM daily_summary WHERE date=$1", today)
 
     if not row:
-        return "📋 No data for daily summary yet."
+        return "No data for daily summary yet."
 
     trades_total = (row["trades_won"] or 0) + (row["trades_lost"] or 0) + (row["trades_void"] or 0)
     win_rate = (
@@ -690,10 +743,10 @@ async def generate_daily_summary_text(wallet_state: dict) -> str:
     sign = "+" if net >= 0 else ""
 
     return (
-        f"📋 DAILY SUMMARY: {today}\n\n"
-        f"💰 ${row['starting_capital'] or 0:.2f} → ${row['ending_capital'] or 0:.2f} "
+        f"DAILY SUMMARY: {today}\n\n"
+        f"${row['starting_capital'] or 0:.2f} -> ${row['ending_capital'] or 0:.2f} "
         f"({sign}${net:.2f})\n"
-        f"📊 Trades: {trades_total} | Wins: {row['trades_won'] or 0} "
+        f"Trades: {trades_total} | Wins: {row['trades_won'] or 0} "
         f"| Losses: {row['trades_lost'] or 0} ({win_rate}%)\n"
         f"Alerts sent: {row['alerts_sent'] or 0} | Skipped: {row['alerts_skipped'] or 0}"
     )
@@ -756,13 +809,13 @@ async def generate_weekly_report() -> str:
     )
 
     return (
-        f"📋 WEEKLY REPORT: {week_ago} — {date.today()}\n\n"
-        f"💰 P&L: {sign}${total_pnl:.2f}\n"
-        f"📊 {total} trades | {wins} wins | {losses} losses ({win_rate}%)\n\n"
+        f"WEEKLY REPORT: {week_ago} -- {date.today()}\n\n"
+        f"P&L: {sign}${total_pnl:.2f}\n"
+        f"{total} trades | {wins} wins | {losses} losses ({win_rate}%)\n\n"
         f"By type:\n{type_lines}\n"
         f"By station:\n{station_lines}\n"
-        f"🏆 Best: {best_str}\n"
-        f"💔 Worst: {worst_str}"
+        f"Best: {best_str}\n"
+        f"Worst: {worst_str}"
     )
 
 

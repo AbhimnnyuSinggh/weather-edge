@@ -74,6 +74,13 @@ async def rank_and_size(signals: List[Signal], wallet_state,
     balance = wallet_state.balance if hasattr(wallet_state, "balance") else wallet_state.get("balance", 0)
     total_value = wallet_state.total_value if hasattr(wallet_state, "total_value") else wallet_state.get("total_value", 0)
 
+    # Fallback: if wallet shows $0, use starting_capital from config
+    if total_value <= 0:
+        fallback = config.get("bot", {}).get("starting_capital", 100.0)
+        logger.warning("Wallet total_value=0, using config starting_capital=%.2f", fallback)
+        total_value = fallback
+        balance = fallback
+
     reservations = await tracker.get_active_reservations_total()
     reserve_pct = trading_cfg.get("reserve_pct", 15) / 100.0
     reserve_amount = total_value * reserve_pct

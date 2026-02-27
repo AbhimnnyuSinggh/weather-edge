@@ -10,6 +10,9 @@ bot:
   timezone: "Asia/Kolkata"
   # First 3 days: enforce flat 5% sizing regardless of confidence
   conservative_days: 3
+  # Starting capital — used when wallet API is unavailable
+  # Update this when you deposit more funds
+  starting_capital: 100.0
 
 # --- Station Registry ---
 stations:

@@ -93,7 +93,8 @@ async def generate_all(metar_data: dict, model_data: dict,
                     else trade_rules.get("lockin_yes", {}).get("non_coastal_min_local_hour", 14))
 
         is_afternoon = local_hour >= min_hour
-        is_today = target_date_val == date.today() if target_date_val else False
+        station_today = now_local.date()  # Use station-local date, not UTC
+        is_today = target_date_val == station_today if target_date_val else False
 
         # --- Afternoon plays (today's market only) ---
         if is_afternoon and is_today and metar:

@@ -101,6 +101,10 @@ async def startup(config: dict):
     stations_cfg = config.get("stations", {})
     await tracker.init_stations(stations_cfg)
 
+    # 2b. Initialize wallet with config capital
+    starting_capital = config.get("bot", {}).get("starting_capital", 100.0)
+    wallet_mod.set_config_capital(starting_capital)
+
     # 3. Telegram
     tg_app = await setup_telegram(config)
 

@@ -220,6 +220,29 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg)
 
 
+async def cmd_setcapital(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Set current capital amount. Usage: /setcapital 100"""
+    try:
+        if not ctx.args:
+            await update.message.reply_text(
+                "Usage: /setcapital <amount>\nExample: /setcapital 100"
+            )
+            return
+        amount = float(ctx.args[0])
+        if amount <= 0:
+            await update.message.reply_text("Amount must be positive.")
+            return
+        wallet_mod.set_manual_capital(amount)
+        await update.message.reply_text(
+            f"✅ Capital set to ${amount:.2f}\n"
+            f"Bot will use this for all position sizing."
+        )
+    except (ValueError, IndexError):
+        await update.message.reply_text(
+            "Invalid amount. Usage: /setcapital 100"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Register handlers
 # ---------------------------------------------------------------------------
@@ -234,6 +257,7 @@ def register_handlers(app: Application):
     app.add_handler(CommandHandler("pause", cmd_pause))
     app.add_handler(CommandHandler("resume", cmd_resume))
     app.add_handler(CommandHandler("help", cmd_help))
+    app.add_handler(CommandHandler("setcapital", cmd_setcapital))
     logger.info("Telegram command handlers registered")
 
 
