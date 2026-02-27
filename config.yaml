@@ -1,0 +1,169 @@
+# ============================================================
+# Weather-Edge Bot Configuration
+# ============================================================
+
+# --- Bot Settings ---
+bot:
+  scan_interval_seconds: 300
+  fast_scan_interval_seconds: 120
+  fast_scan_duration_minutes: 30
+  timezone: "Asia/Kolkata"
+  # First 3 days: enforce flat 5% sizing regardless of confidence
+  conservative_days: 3
+
+# --- Station Registry ---
+stations:
+  RKSI:
+    city: "Seoul"
+    country: "KR"
+    lat: 37.4692
+    lon: 126.4505
+    timezone: "Asia/Seoul"
+    unit: "C"
+    wunderground_url: "https://www.wunderground.com/history/daily/kr/incheon/RKSI"
+    is_coastal: true
+    starting_bias:
+      ecmwf: -1.0
+      gfs: -1.0
+      icon: -0.8
+    models: ["ecmwf", "gfs", "icon"]
+
+  EGLC:
+    city: "London"
+    country: "GB"
+    lat: 51.5053
+    lon: 0.0553
+    timezone: "Europe/London"
+    unit: "F"
+    wunderground_url: "https://www.wunderground.com/history/daily/gb/london/EGLC"
+    is_coastal: false
+    starting_bias:
+      ecmwf: 1.0
+      gfs: 0.8
+      icon: 0.5
+    models: ["ecmwf", "gfs", "icon"]
+
+  KLGA:
+    city: "NYC"
+    country: "US"
+    lat: 40.7772
+    lon: -73.8726
+    timezone: "America/New_York"
+    unit: "F"
+    wunderground_url: "https://www.wunderground.com/history/daily/us/ny/new-york-city/KLGA"
+    is_coastal: true
+    starting_bias:
+      gfs: 1.0
+      ecmwf: 0.8
+      icon: 0.5
+      nws: 0.5
+    models: ["gfs", "ecmwf", "icon", "nws"]
+
+# --- Trading Rules ---
+trading:
+  min_confidence: 40
+  max_alerts_per_cycle: 7
+  max_single_trade_pct: 12
+  max_single_market_pct: 25
+  daily_loss_limit_pct: 8
+  reserve_pct: 15
+  silent_day_min_ev: 0.50
+
+  initial_flat_size_pct: 5
+  initial_flat_trades: 30
+  dynamic_sizing:
+    high_confidence:
+      min_pct: 8
+      max_pct: 10
+    medium_confidence:
+      min_pct: 5
+      max_pct: 7
+    low_confidence:
+      min_pct: 3
+      max_pct: 4
+
+# --- Trade Type Rules ---
+trade_types:
+  lockin_yes:
+    min_high_set_probability: 0.80
+    max_entry_price: 0.75
+    min_falling_readings: 3
+    coastal_min_local_hour: 15
+    non_coastal_min_local_hour: 14
+
+  no_tail:
+    min_yes_price: 0.20
+    max_no_cost: 0.80
+    min_ranges_above_high: 2
+    min_decay_impossibility: 0.92
+
+  forecast_yes:
+    max_entry_price: 0.15
+    min_model_agreement: 2
+    min_edge_pct: 15
+    momentum_divergence_penalty: 0.20
+
+  ladder:
+    max_individual_bin_price: 0.10
+    max_total_cost_vs_prob: 0.40
+    min_model_spread_f: 3.0
+    min_model_spread_c: 2.0
+    min_bins: 3
+
+# --- Confidence Score Weights ---
+confidence:
+  lockin:
+    high_set_probability: 40
+    metar_velocity: 25
+    model_agreement: 15
+    rounding_edge: 10
+    coastal_penalty: -15
+
+  no_tail:
+    decay_impossibility: 40
+    metar_velocity: 25
+    ranges_above_high: 20
+    model_cap_agreement: 15
+
+  forecast:
+    model_agreement: 30
+    edge_size: 25
+    model_trust: 20
+    bias_data_confidence: 15
+    book_depth: 10
+
+  ladder:
+    cost_vs_probability: 35
+    model_diversity: 25
+    historical_success: 20
+    book_depth: 20
+
+# --- Model Release Schedule (UTC) ---
+model_releases:
+  hrrr_12z:
+    utc_hour: 18
+    utc_minute: 30
+    applies_to: ["KLGA", "KMIA", "KORD"]
+  ecmwf_12z:
+    utc_hour: 18
+    utc_minute: 30
+    applies_to: ["RKSI", "EGLC", "LTAC", "SAEZ", "KLGA"]
+  gfs_12z:
+    utc_hour: 16
+    utc_minute: 30
+    applies_to: ["RKSI", "EGLC", "LTAC", "SAEZ", "KLGA"]
+
+# --- Circuit Breakers ---
+circuit_breakers:
+  capital_75pct:
+    action: "reduce_size_30pct"
+    alert: "⚠️ Capital below 75%. Reducing position sizes by 30%. NO plays only."
+  capital_60pct:
+    action: "reduce_size_50pct_no_only"
+    alert: "🛑 Capital below 60%. Reducing sizes by 50%. METAR lock-in NO plays ONLY."
+  capital_50pct:
+    action: "halt_3_days"
+    alert: "🚨 Capital below 50%. HALTING all trades for 3 days. Review every losing trade."
+  three_losing_days:
+    action: "reduce_size_30pct_2_days"
+    alert: "⚠️ 3 consecutive losing days. Reducing sizes by 30% for next 2 days."
