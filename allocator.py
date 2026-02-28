@@ -42,6 +42,7 @@ class AlertReady:
     book_depth: int = 0
     metar_summary: str = ""
     model_summary: str = ""
+    distribution_summary: str = ""
     # Sized fields
     shares: float = 0.0
     cost: float = 0.0
@@ -193,6 +194,7 @@ async def rank_and_size(signals: List[Signal], wallet_state,
             book_depth=signal.book_depth,
             metar_summary=signal.metar_summary,
             model_summary=signal.model_summary,
+            distribution_summary=getattr(signal, "distribution_summary", ""),
             shares=round(shares, 1),
             cost=round(cost, 2),
             sized_shares=round(shares, 1),

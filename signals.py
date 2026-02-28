@@ -116,20 +116,7 @@ async def generate_all(metar_data: dict, model_data: dict,
             station_signals.extend(s for s in no_tails if s.confidence_score >= min_conf)
 
         # --- Legacy: Forecast plays ---
-        if not is_afternoon or not is_today:
-            forecast = check_forecast_yes(
-                station, city, target_date_val, models, bins_list,
-                trade_rules, cfg, metar,
-            )
-            if forecast and forecast.confidence_score >= min_conf:
-                station_signals.append(forecast)
-
-            ladder = check_ladder(
-                station, city, target_date_val, models, bins_list,
-                trade_rules, cfg,
-            )
-            if ladder and ladder.confidence_score >= min_conf:
-                station_signals.append(ladder)
+        # (Removed in favor of unified edge scanner)
 
         # --- NEW: Distribution-based unified edge scanner ---
         if models and bins_list:
@@ -229,7 +216,7 @@ def _scan_edges(station: str, city: str, target_date_val: date,
                 loss_if_lose=round(10 * yes_price, 2),
                 market_id=market_id,
                 polymarket_url=poly_url,
-                model_summary=dist_text,
+                distribution_summary=dist_text,
             ))
 
         # --- NO edge signal ---
@@ -252,7 +239,7 @@ def _scan_edges(station: str, city: str, target_date_val: date,
                 loss_if_lose=round(10 * no_price, 2),
                 market_id=market_id,
                 polymarket_url=poly_url,
-                model_summary=dist_text,
+                distribution_summary=dist_text,
             ))
 
         # Track bins with YES edge for ladder detection
@@ -289,7 +276,7 @@ def _scan_edges(station: str, city: str, target_date_val: date,
                 win_probability=round(total_prob, 3),
                 profit_if_win=round(10 * (1.0 - total_cost / max(1, len(edge_bins))), 2),
                 loss_if_lose=round(10 * total_cost / max(1, len(edge_bins)), 2),
-                model_summary=dist_text,
+                distribution_summary=dist_text,
             ))
 
     return signals

@@ -1013,23 +1013,26 @@ def get_model_confluence(models_data: Dict[str, ModelForecast], unit: str = "F")
     """Generate a confluence report card for all available models."""
     if not models_data:
         return ""
-        
+
+    model_list = []
     temps = []
     for model_name, forecast in models_data.items():
         if unit.upper() == "F":
-            temps.append(forecast.bias_corrected_f)
+            t = forecast.bias_corrected_f
         else:
-            temps.append(forecast.bias_corrected_c)
-            
+            t = forecast.bias_corrected_c
+        
+        display_name = model_name.upper()
+        if display_name == "TOMORROWIO": display_name = "Tomorrow.io"
+        if display_name == "OPENWEATHER": display_name = "OpenWeather"
+        
+        temps.append(t)
+        model_list.append(f"{display_name} {t:.0f}°{unit}")
+
     if not temps:
         return ""
-        
+
     avg_temp = sum(temps) / len(temps)
+    models_str = " | ".join(model_list)
     
-    # 1°C is equivalent to 1.8°F
-    threshold = 1.0 if unit.upper() == "C" else 1.8
-    
-    agree_count = sum(1 for t in temps if abs(t - avg_temp) <= threshold)
-    agreement_pct = (agree_count / len(temps)) * 100
-    
-    return f"🌡️ {len(temps)} Models: Avg {avg_temp:.1f}°{unit} (±{threshold}°{unit}) | {agreement_pct:.0f}% Strong Agreement"
+    return f"🌡️ Models ({len(temps)} sources):\n{models_str}\nConsensus: {avg_temp:.1f}°{unit}"
