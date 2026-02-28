@@ -288,23 +288,51 @@ async def main_loop(config: dict):
             # Step 11: Send alerts (if not paused)
             if not commands.is_paused():
                 if ranked_alerts:
-                    # Clean expired dedup entries
+                    alert_interval = config.get("trading", {}).get("alert_update_interval_minutes", 8)
                     now = datetime.utcnow()
+                    
+                    # Clean expired dedup entries (Keep in cache for 60 mins)
                     expired = [k for k, v in _recent_alerts.items()
-                               if (now - v).total_seconds() > DEDUP_MINUTES * 60]
+                               if (now - v).total_seconds() > 60 * 60]
                     for k in expired:
                         del _recent_alerts[k]
 
+                    max_alerts_per_day = config.get("trading", {}).get("max_alerts_per_day", 4)
+
                     for alert in ranked_alerts:
-                        # Dedup key: station + date + trade_type + bin_label
-                        dedup_key = f"{alert.station}_{alert.target_date}_{alert.trade_type}_{alert.bin_label}"
-                        if dedup_key in _recent_alerts:
-                            logger.info("Skipping duplicate alert: %s", dedup_key)
+                        # Check if user already took the trade
+                        if wallet_state.has_user_taken_trade(alert.station, alert.target_date, alert.bin_label):
+                            logger.info("Skipping already taken trade: %s", alert.bin_label)
                             continue
+
+                        # Dedup key: station + date + trade_type + bin_label
+                        import hashlib
+                        dedup_str = f"{alert.station}_{alert.target_date}_{alert.trade_type}_{alert.bin_label}"
+                        dedup_key = hashlib.md5(dedup_str.encode()).hexdigest()
+
+                        is_new_alert = True
+                        if dedup_key in _recent_alerts:
+                            mins_ago = (now - _recent_alerts[dedup_key]).total_seconds() / 60.0
+                            if mins_ago < alert_interval:
+                                logger.info("Skipping fresh un-taken alert (waiting %d min): %s", alert_interval, alert.bin_label)
+                                continue
+                            
+                            # It's an update!
+                            alert.is_update = True
+                            alert.update_minutes_ago = int(mins_ago)
+                            is_new_alert = False
+
+                        # Enforce daily alert limit for new alerts
+                        if is_new_alert:
+                            if not await tracker.can_send_alert_today(max_alerts_per_day):
+                                logger.info("Daily alert limit reached (%d). Skipping new alert: %s", max_alerts_per_day, alert.bin_label)
+                                continue
 
                         try:
                             await alerts.send_trade_alert(alert, wallet_state)
                             _recent_alerts[dedup_key] = now
+                            if is_new_alert:
+                                await tracker.increment_today_alert_count()
                             await allocator.reserve_capital(
                                 alert.sized_cost, alert.alert_id
                             )

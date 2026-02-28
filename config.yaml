@@ -60,7 +60,8 @@ stations:
       ecmwf: 0.8
       icon: 0.5
       nws: 0.5
-    models: ["gfs", "ecmwf", "icon", "nws"]
+      noaa: 0.5
+    models: ["gfs", "ecmwf", "icon", "nws", "noaa"]
 
 # --- Trading Rules ---
 trading:

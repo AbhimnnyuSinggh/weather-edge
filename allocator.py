@@ -54,6 +54,8 @@ class AlertReady:
     is_combo: bool = False
     combo_alerts: List = field(default_factory=list)
     alert_id: str = ""
+    is_update: bool = False
+    update_minutes_ago: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -167,6 +169,9 @@ async def rank_and_size(signals: List[Signal], wallet_state,
         loss_if_lose = cost
 
         sized_ev = signal.win_probability * profit_if_win - (1 - signal.win_probability) * loss_if_lose
+        
+        # Apply realistic 15x EV cap from strategy
+        sized_ev = min(sized_ev, cost * 15.0)
 
         alert = AlertReady(
             trade_type=signal.trade_type,

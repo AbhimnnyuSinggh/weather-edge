@@ -83,6 +83,16 @@ class WalletState:
     total_value: float = 0.0
     source: str = "api"  # "api" or "db_fallback"
 
+    def has_user_taken_trade(self, station: str, target_date: Optional[date], bin_label: str) -> bool:
+        """Check if user owns shares in this exact bin."""
+        for p in self.positions:
+            if p.station == station and p.target_date == target_date:
+                # Basic string inclusion for ladder or specific bin matching
+                if bin_label in p.bin_label or p.bin_label in bin_label:
+                    if p.shares > 0:
+                        return True
+        return False
+
 
 # ---------------------------------------------------------------------------
 # Internal capital tracking (fallback)

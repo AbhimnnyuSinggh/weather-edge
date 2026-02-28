@@ -102,6 +102,7 @@ class MarketBin:
     bin: BinInfo
     yes_price: float
     volume_24h: float = 0.0
+    liquidity_usd: float = 0.0
     polymarket_url: str = ""
 
 
@@ -196,6 +197,10 @@ async def fetch_active_weather_markets(known_stations: List[str] = None
 # ---------------------------------------------------------------------------
 # Event parsing
 # ---------------------------------------------------------------------------
+def is_valid_price(price: float, liquidity: float = 0.0) -> bool:
+    """Return True if price >= 0.01 and liquidity >= $5.00."""
+    return price >= 0.01 and liquidity >= 5.0
+
 def _parse_event(event: dict, station: str = None) -> Optional[MarketGroup]:
     """Parse a Gamma API event into a MarketGroup."""
     title = event.get("title", "")
@@ -238,6 +243,11 @@ def _parse_event(event: dict, station: str = None) -> Optional[MarketGroup]:
     for market in markets:
         mbin = _parse_market_bin(market, unit)
         if mbin:
+            # Enforce 0-cent minimums and liquidity checks
+            if not is_valid_price(mbin.yes_price, mbin.liquidity_usd):
+                continue
+            
+            mbin.yes_price = max(mbin.yes_price, 0.01)
             group.bins.append(mbin)
 
     # Sort bins by low bound
@@ -370,8 +380,9 @@ def _parse_market_bin(market: dict, default_unit: str) -> Optional[MarketBin]:
         except (json.JSONDecodeError, ValueError):
             pass
 
-    # Volume
+    # Volume and Liquidity
     volume = float(market.get("volume", 0) or 0)
+    liquidity = float(market.get("liquidity", 0) or 0)
 
     # Polymarket URL
     slug = market.get("slug", "")
@@ -383,6 +394,7 @@ def _parse_market_bin(market: dict, default_unit: str) -> Optional[MarketBin]:
         bin=bin_info,
         yes_price=yes_price,
         volume_24h=volume,
+        liquidity_usd=liquidity,
         polymarket_url=poly_url,
     )
 

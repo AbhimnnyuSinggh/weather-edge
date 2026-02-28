@@ -98,6 +98,8 @@ async def generate_all(metar_data: dict, model_data: dict,
         station_today = now_local.date()
         is_today = target_date_val == station_today if target_date_val else False
 
+        station_signals = []
+
         # --- Legacy: Afternoon plays (today's market only) ---
         if is_afternoon and is_today and metar:
             lockin = check_lockin_yes(
@@ -105,13 +107,13 @@ async def generate_all(metar_data: dict, model_data: dict,
                 trade_rules, cfg, local_hour,
             )
             if lockin and lockin.confidence_score >= min_conf:
-                all_signals.append(lockin)
+                station_signals.append(lockin)
 
             no_tails = check_no_tail(
                 station, city, target_date_val, metar, bins_list, prob,
                 trade_rules, cfg,
             )
-            all_signals.extend(s for s in no_tails if s.confidence_score >= min_conf)
+            station_signals.extend(s for s in no_tails if s.confidence_score >= min_conf)
 
         # --- Legacy: Forecast plays ---
         if not is_afternoon or not is_today:
@@ -120,14 +122,14 @@ async def generate_all(metar_data: dict, model_data: dict,
                 trade_rules, cfg, metar,
             )
             if forecast and forecast.confidence_score >= min_conf:
-                all_signals.append(forecast)
+                station_signals.append(forecast)
 
             ladder = check_ladder(
                 station, city, target_date_val, models, bins_list,
                 trade_rules, cfg,
             )
             if ladder and ladder.confidence_score >= min_conf:
-                all_signals.append(ladder)
+                station_signals.append(ladder)
 
         # --- NEW: Distribution-based unified edge scanner ---
         if models and bins_list:
@@ -136,10 +138,19 @@ async def generate_all(metar_data: dict, model_data: dict,
                 metar, cfg, unit, trade_rules,
             )
             # Add edge signals that don't duplicate existing signals
-            existing_bins = {(s.bin_label, s.side) for s in all_signals}
+            existing_bins = {(s.bin_label, s.side) for s in station_signals}
             for es in edge_signals:
                 if (es.bin_label, es.side) not in existing_bins and es.confidence_score >= min_conf:
-                    all_signals.append(es)
+                    station_signals.append(es)
+                    
+        # --- Prepend Confluence Text to all signals for this station ---
+        from models import get_model_confluence
+        confluence_text = get_model_confluence(models, unit)
+        if confluence_text:
+            for s in station_signals:
+                s.model_summary = f"{confluence_text}\n{s.model_summary}"
+
+        all_signals.extend(station_signals)
 
     return all_signals
 
@@ -304,15 +315,23 @@ def _edge_confidence(edge: float, prob: float,
 
 
 def _calc_ev(prob: float, price: float, side: str) -> float:
-    """Expected value calculation."""
-    est_shares = 10
-    if side == "YES":
-        profit_if_win = est_shares * (1.0 - price)
-        loss_if_lose = est_shares * price
-    else:
-        profit_if_win = est_shares * (1.0 - price)
-        loss_if_lose = est_shares * price
-    return prob * profit_if_win - (1 - prob) * loss_if_lose
+    """Expected value calculation (Realistic and max 15x return cap)."""
+    est_shares = 10.0
+    if price <= 0:
+        return 0.0
+        
+    cost = price * est_shares
+    payout_if_win = est_shares * 1.0  # Polymarket pays $1 per share
+    
+    # Accurate win_prob for side
+    win_prob = prob if side == "YES" else (1.0 - prob)
+    ev = (win_prob * payout_if_win) - cost
+    
+    # Strict cap from original strategy
+    max_multiplier = 15.0
+    displayed_ev = min(ev, cost * max_multiplier)
+    
+    return round(displayed_ev, 2)
 
 
 # ---------------------------------------------------------------------------

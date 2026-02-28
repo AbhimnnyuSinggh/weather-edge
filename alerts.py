@@ -112,9 +112,20 @@ async def send_trade_alert(alert: AlertReady, wallet_state):
                 alert.confidence_score, alert.sized_ev)
 
 
+def _format_kelly(a: AlertReady, balance: float) -> str:
+    edge = max(0.01, a.win_probability - a.entry_price)
+    suggested_size = edge * balance * 0.25
+    suggested_pct = (suggested_size / balance * 100) if balance > 0 else 0
+    max_risk = balance * 0.08
+    return f"Suggested size: ${suggested_size:.2f} ({suggested_pct:.1f}% of ${balance:.0f}) | Max risk today: ${max_risk:.2f}"
+
+
 def _format_lockin(a: AlertReady, balance: float) -> str:
+    update_str = f"🔄 Prices updated {a.update_minutes_ago} mins ago\n" if a.is_update else ""
+    kelly_str = _format_kelly(a, balance)
     return (
         f"🔒 LOCK-IN: {a.city} {a.station}\n"
+        f"{update_str}"
         f"Score: {a.confidence_score}/100 | {_ist_time()}\n\n"
         f"📡 METAR\n"
         f"{a.metar_summary}\n"
@@ -123,16 +134,20 @@ def _format_lockin(a: AlertReady, balance: float) -> str:
         f"✅ BUY YES: \"{a.bin_label}\" at {a.entry_price*100:.0f}¢\n"
         f"   Shares: {a.sized_shares:.0f} | Cost: ${a.sized_cost:.2f} | "
         f"Profit if win: ${a.sized_profit_if_win:.2f}\n"
-        f"   Win prob: {a.win_probability*100:.0f}% | EV: +${a.sized_ev:.2f}\n"
-        f"   Market: {a.polymarket_url}\n\n"
-        f"💰 Wallet: ${balance:.2f} | After trade: ${a.available_after:.2f}"
+        f"   Win prob: {a.win_probability*100:.0f}% | Realistic EV: +${a.sized_ev:.2f} (max 15x return)\n"
+        f"   Market: {a.polymarket_url}\n"
+        f"   {kelly_str}\n\n"
+        f"💰 Real Wallet: ${balance:.2f} | After trade: ${a.available_after:.2f}"
     )
 
 
 def _format_no_tail(a: AlertReady, balance: float) -> str:
     yes_price = 1.0 - a.entry_price
+    update_str = f"🔄 Prices updated {a.update_minutes_ago} mins ago\n" if a.is_update else ""
+    kelly_str = _format_kelly(a, balance)
     return (
         f"🛡️ NO PLAY: {a.city} {a.station}\n"
+        f"{update_str}"
         f"Score: {a.confidence_score}/100 | {_ist_time()}\n\n"
         f"📡 METAR\n"
         f"{a.metar_summary}\n"
@@ -141,15 +156,19 @@ def _format_no_tail(a: AlertReady, balance: float) -> str:
         f"NO costs {a.entry_price*100:.0f}¢)\n"
         f"   Shares: {a.sized_shares:.0f} | Cost: ${a.sized_cost:.2f} | "
         f"Profit if win: ${a.sized_profit_if_win:.2f}\n"
-        f"   Win prob: {a.win_probability*100:.0f}% | EV: +${a.sized_ev:.2f}\n"
-        f"   Market: {a.polymarket_url}\n\n"
-        f"💰 Wallet: ${balance:.2f} | After trade: ${a.available_after:.2f}"
+        f"   Win prob: {a.win_probability*100:.0f}% | Realistic EV: +${a.sized_ev:.2f} (max 15x return)\n"
+        f"   Market: {a.polymarket_url}\n"
+        f"   {kelly_str}\n\n"
+        f"💰 Real Wallet: ${balance:.2f} | After trade: ${a.available_after:.2f}"
     )
 
 
 def _format_forecast(a: AlertReady, balance: float) -> str:
+    update_str = f"🔄 Prices updated {a.update_minutes_ago} mins ago\n" if a.is_update else ""
+    kelly_str = _format_kelly(a, balance)
     return (
         f"📊 FORECAST: {a.city} {a.station} ({a.target_date})\n"
+        f"{update_str}"
         f"Score: {a.confidence_score}/100 | {_ist_time()}\n\n"
         f"🌡️ Models:\n"
         f"{a.model_summary}\n"
@@ -158,9 +177,10 @@ def _format_forecast(a: AlertReady, balance: float) -> str:
         f"✅ BUY YES: \"{a.bin_label}\" at {a.entry_price*100:.0f}¢\n"
         f"   Shares: {a.sized_shares:.0f} | Cost: ${a.sized_cost:.2f} | "
         f"Profit if win: ${a.sized_profit_if_win:.2f}\n"
-        f"   Win prob: {a.win_probability*100:.0f}% | EV: +${a.sized_ev:.2f}\n"
-        f"   Market: {a.polymarket_url}\n\n"
-        f"💰 Wallet: ${balance:.2f} | After trade: ${a.available_after:.2f}"
+        f"   Win prob: {a.win_probability*100:.0f}% | Realistic EV: +${a.sized_ev:.2f} (max 15x return)\n"
+        f"   Market: {a.polymarket_url}\n"
+        f"   {kelly_str}\n\n"
+        f"💰 Real Wallet: ${balance:.2f} | After trade: ${a.available_after:.2f}"
     )
 
 
@@ -169,8 +189,11 @@ def _format_ladder(a: AlertReady, balance: float) -> str:
     for b in a.bins:
         bin_lines += f"  • {b['label']}: {b['yes_price']*100:.0f}¢\n"
 
+    update_str = f"🔄 Prices updated {a.update_minutes_ago} mins ago\n" if a.is_update else ""
+    kelly_str = _format_kelly(a, balance)
     return (
         f"🪜 LADDER: {a.city} {a.station} ({a.target_date})\n"
+        f"{update_str}"
         f"Score: {a.confidence_score}/100 | {_ist_time()}\n\n"
         f"🌡️ Models disagree:\n"
         f"{a.model_summary}\n"
@@ -178,39 +201,48 @@ def _format_ladder(a: AlertReady, balance: float) -> str:
         f"━━ BUY ALL {len(a.bins)} BINS ━━\n"
         f"{bin_lines}\n"
         f"Total: ${a.sized_cost:.2f} across {len(a.bins)} bins\n"
-        f"Range probability: {a.win_probability*100:.0f}% | EV: +${a.sized_ev:.2f}\n\n"
-        f"💰 Wallet: ${balance:.2f} | After trades: ${a.available_after:.2f}"
+        f"Range probability: {a.win_probability*100:.0f}% | Realistic EV: +${a.sized_ev:.2f} (max 15x return)\n"
+        f"{kelly_str}\n\n"
+        f"💰 Real Wallet: ${balance:.2f} | After trades: ${a.available_after:.2f}"
     )
 
 
 def _format_edge_yes(a: AlertReady, balance: float) -> str:
+    update_str = f"🔄 Prices updated {a.update_minutes_ago} mins ago\n" if a.is_update else ""
+    kelly_str = _format_kelly(a, balance)
     return (
         f"📈 EDGE YES: {a.city} {a.station} ({a.target_date})\n"
+        f"{update_str}"
         f"Score: {a.confidence_score}/100 | {_ist_time()}\n\n"
         f"{a.model_summary}\n"
         f"API Status: {_get_sources_string()}\n\n"
         f"✅ BUY YES: \"{a.bin_label}\" at {a.entry_price*100:.0f}¢\n"
         f"   Shares: {a.sized_shares:.0f} | Cost: ${a.sized_cost:.2f} | "
         f"Profit if win: ${a.sized_profit_if_win:.2f}\n"
-        f"   Win prob: {a.win_probability*100:.0f}% | EV: +${a.sized_ev:.2f}\n"
-        f"   Market: {a.polymarket_url}\n\n"
-        f"💰 Wallet: ${balance:.2f} | After trade: ${a.available_after:.2f}"
+        f"   Win prob: {a.win_probability*100:.0f}% | Realistic EV: +${a.sized_ev:.2f} (max 15x return)\n"
+        f"   Market: {a.polymarket_url}\n"
+        f"   {kelly_str}\n\n"
+        f"💰 Real Wallet: ${balance:.2f} | After trade: ${a.available_after:.2f}"
     )
 
 
 def _format_edge_no(a: AlertReady, balance: float) -> str:
     yes_price = 1.0 - a.entry_price
+    update_str = f"🔄 Prices updated {a.update_minutes_ago} mins ago\n" if a.is_update else ""
+    kelly_str = _format_kelly(a, balance)
     return (
         f"📉 EDGE NO: {a.city} {a.station} ({a.target_date})\n"
+        f"{update_str}"
         f"Score: {a.confidence_score}/100 | {_ist_time()}\n\n"
         f"{a.model_summary}\n"
         f"API Status: {_get_sources_string()}\n\n"
         f"🛡️ BUY NO: \"{a.bin_label}\" (YES at {yes_price*100:.0f}¢, NO costs {a.entry_price*100:.0f}¢)\n"
         f"   Shares: {a.sized_shares:.0f} | Cost: ${a.sized_cost:.2f} | "
         f"Profit if win: ${a.sized_profit_if_win:.2f}\n"
-        f"   Win prob: {a.win_probability*100:.0f}% | EV: +${a.sized_ev:.2f}\n"
-        f"   Market: {a.polymarket_url}\n\n"
-        f"💰 Wallet: ${balance:.2f} | After trade: ${a.available_after:.2f}"
+        f"   Win prob: {a.win_probability*100:.0f}% | Realistic EV: +${a.sized_ev:.2f} (max 15x return)\n"
+        f"   Market: {a.polymarket_url}\n"
+        f"   {kelly_str}\n\n"
+        f"💰 Real Wallet: ${balance:.2f} | After trade: ${a.available_after:.2f}"
     )
 
 
@@ -223,8 +255,11 @@ def _format_edge_ladder(a: AlertReady, balance: float) -> str:
         else:
             bin_lines += f"  • {b['label']}: {b['yes_price']*100:.0f}¢\n"
 
+    update_str = f"🔄 Prices updated {a.update_minutes_ago} mins ago\n" if a.is_update else ""
+    kelly_str = _format_kelly(a, balance)
     return (
         f"🪜 EDGE LADDER: {a.city} {a.station} ({a.target_date})\n"
+        f"{update_str}"
         f"Score: {a.confidence_score}/100 | {_ist_time()}\n\n"
         f"{a.model_summary}\n"
         f"API Status: {_get_sources_string()}\n\n"
@@ -232,7 +267,7 @@ def _format_edge_ladder(a: AlertReady, balance: float) -> str:
         f"{bin_lines}\n"
         f"Total: ${a.sized_cost:.2f} across {len(a.bins)} bins\n"
         f"Range probability: {a.win_probability*100:.0f}% | EV: +${a.sized_ev:.2f}\n\n"
-        f"💰 Wallet: ${balance:.2f} | After trades: ${a.available_after:.2f}"
+        f"💰 Real Wallet: ${balance:.2f} | After trades: ${a.available_after:.2f}"
     )
 
 

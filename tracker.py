@@ -598,6 +598,31 @@ async def get_active_reservations_total() -> float:
         )
         return float(row["total"]) if row else 0.0
 
+# ---------------------------------------------------------------------------
+# Daily Alert Throttling
+# ---------------------------------------------------------------------------
+_daily_alerts_sent = 0
+_daily_alerts_date = None
+
+async def get_today_alert_count() -> int:
+    """Get number of alerts sent today."""
+    global _daily_alerts_sent, _daily_alerts_date
+    if _daily_alerts_date != date.today():
+        _daily_alerts_sent = 0
+        _daily_alerts_date = date.today()
+    return _daily_alerts_sent
+
+async def increment_today_alert_count():
+    """Increment the daily alert counter."""
+    global _daily_alerts_sent, _daily_alerts_date
+    if _daily_alerts_date != date.today():
+        _daily_alerts_sent = 0
+        _daily_alerts_date = date.today()
+    _daily_alerts_sent += 1
+
+async def can_send_alert_today(max_per_day: int) -> bool:
+    """Check if we are under the daily alert limit."""
+    return await get_today_alert_count() < max_per_day
 
 # ---------------------------------------------------------------------------
 # Circuit breakers

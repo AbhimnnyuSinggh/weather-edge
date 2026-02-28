@@ -36,7 +36,7 @@ EWMA_ALPHA = 0.15  # ~90% weight to last 13 data points
 
 # Default MAE per model (°C) — used for distribution calculations
 DEFAULT_MAE = {
-    "gfs": 2.0, "ecmwf": 1.5, "icon": 2.0, "nws": 1.8,
+    "gfs": 2.0, "ecmwf": 1.5, "icon": 2.0, "nws": 1.8, "noaa": 1.8,
     "tomorrow_io": 2.0, "openweather": 2.2, "weatherbit": 2.5,
     "noaa_mos": 1.8, "ensemble": 1.0,
 }
@@ -108,6 +108,10 @@ async def fetch_all_stations(stations_cfg: dict) -> Dict[str, Dict[str, ModelFor
             nws_result = await _fetch_nws(icao, lat, lon, cfg)
             if nws_result:
                 results[icao]["nws"] = nws_result
+
+            noaa_result = await _fetch_noaa(icao, lat, lon, cfg)
+            if noaa_result:
+                results[icao]["noaa"] = noaa_result
 
         # 3) Tomorrow.io
         if _rate_limit_status.get("tomorrow_io") != "limited":
@@ -334,6 +338,95 @@ async def _fetch_nws(station: str, lat: float, lon: float,
 
     return None
 
+
+    return None
+
+
+# ---------------------------------------------------------------------------
+# NOAA Gridpoints fetch (US stations only)
+# ---------------------------------------------------------------------------
+async def _fetch_noaa(station: str, lat: float, lon: float,
+                       station_cfg: dict) -> Optional[ModelForecast]:
+    """Fetch NOAA gridpoints forecast for US stations."""
+    try:
+        async with aiohttp.ClientSession() as session:
+            # Step 1: Get gridpoint endpoints
+            points_url = f"{NWS_POINTS_URL}/{lat},{lon}"
+            async with session.get(
+                points_url,
+                headers={"User-Agent": USER_AGENT},
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                if resp.status != 200:
+                    logger.error("NOAA points HTTP %d for %s", resp.status, station)
+                    return None
+                points_data = await resp.json()
+
+            grid_id = points_data.get("properties", {}).get("gridId")
+            grid_x = points_data.get("properties", {}).get("gridX")
+            grid_y = points_data.get("properties", {}).get("gridY")
+            
+            if not grid_id or grid_x is None or grid_y is None:
+                return None
+
+            forecast_url = f"https://api.weather.gov/gridpoints/{grid_id}/{grid_x},{grid_y}/forecast"
+
+            # Step 2: Get the gridpoint forecast
+            async with session.get(
+                forecast_url,
+                headers={"User-Agent": USER_AGENT},
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                if resp.status != 200:
+                    logger.error("NOAA gridpoints HTTP %d for %s", resp.status, station)
+                    return None
+                forecast_data = await resp.json()
+
+    except Exception as e:
+        logger.error("NOAA error for %s: %s", station, e)
+        return None
+
+    # Parse periods — find daytime period with high temperature
+    periods = forecast_data.get("properties", {}).get("periods", [])
+    for period in periods:
+        if period.get("isDaytime"):
+            temp_f = float(period.get("temperature", 0))
+            temp_unit = period.get("temperatureUnit", "F")
+            if temp_unit == "C":
+                temp_c = temp_f
+                temp_f = temp_c * 9.0 / 5.0 + 32.0
+            else:
+                temp_c = (temp_f - 32.0) * 5.0 / 9.0
+
+            start_time = period.get("startTime", "")
+            try:
+                target_date = date.fromisoformat(start_time[:10])
+            except (ValueError, IndexError):
+                target_date = date.today()
+
+            bias_c = await _get_bias(station, "noaa", station_cfg)
+            corrected_c = temp_c - bias_c
+            corrected_f = corrected_c * 9.0 / 5.0 + 32.0
+            weight = await _get_weight(station, "noaa")
+
+            forecast = ModelForecast(
+                station=station,
+                model_name="noaa",
+                target_date=target_date,
+                raw_high_c=temp_c,
+                raw_high_f=temp_f,
+                bias_corrected_c=corrected_c,
+                bias_corrected_f=corrected_f,
+                weight=weight,
+            )
+
+            await tracker.store_forecast(
+                station, target_date, "noaa",
+                temp_c, temp_f, corrected_c, corrected_f,
+            )
+            return forecast
+
+    return None
 
 # ---------------------------------------------------------------------------
 # Tomorrow.io fetch (500 free/day)
@@ -903,3 +996,31 @@ async def get_latest_from_db(stations_cfg: dict) -> Dict[str, Dict[str, ModelFor
                     fetched_at=r["fetched_at"],
                 )
     return results
+
+# ---------------------------------------------------------------------------
+# Confluence logic
+# ---------------------------------------------------------------------------
+def get_model_confluence(models_data: Dict[str, ModelForecast], unit: str = "F") -> str:
+    """Generate a confluence report card for all available models."""
+    if not models_data:
+        return ""
+        
+    temps = []
+    for model_name, forecast in models_data.items():
+        if unit.upper() == "F":
+            temps.append(forecast.bias_corrected_f)
+        else:
+            temps.append(forecast.bias_corrected_c)
+            
+    if not temps:
+        return ""
+        
+    avg_temp = sum(temps) / len(temps)
+    
+    # 1°C is equivalent to 1.8°F
+    threshold = 1.0 if unit.upper() == "C" else 1.8
+    
+    agree_count = sum(1 for t in temps if abs(t - avg_temp) <= threshold)
+    agreement_pct = (agree_count / len(temps)) * 100
+    
+    return f"🌡️ {len(temps)} Models: Avg {avg_temp:.1f}°{unit} (±{threshold}°{unit}) | {agreement_pct:.0f}% Strong Agreement"
