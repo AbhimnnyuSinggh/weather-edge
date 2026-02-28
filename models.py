@@ -9,7 +9,7 @@ divergence.
 
 import logging
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional
 
 import aiohttp
@@ -117,7 +117,7 @@ async def _fetch_open_meteo(station: str, lat: float, lon: float,
     # Open-Meteo returns separate daily arrays per model
     # The response structure varies — handle both flat and per-model formats
     today = date.today()
-    tomorrow = date.today()
+    tomorrow = date.today() + timedelta(days=1)
 
     for model_key, api_name in model_map.items():
         if model_key not in model_list:
@@ -137,6 +137,7 @@ async def _fetch_open_meteo(station: str, lat: float, lon: float,
                 model_daily = daily[daily_key]
 
         if not model_daily or not daily.get("time"):
+            logger.debug("No data for model %s (%s) at station %s", model_key, api_name, station)
             continue
 
         dates = daily["time"]

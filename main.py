@@ -11,6 +11,7 @@ import logging
 import os
 import sys
 from datetime import datetime, date
+from typing import Dict
 
 from aiohttp import web
 
@@ -143,6 +144,11 @@ async def main_loop(config: dict):
     tg_app = await startup(config)
     stations_cfg = config.get("stations", {})
     station_ids = list(stations_cfg.keys())
+
+    # Deduplication cache: {signal_key: timestamp_sent}
+    # Prevents sending the same alert within 30 minutes
+    _recent_alerts: Dict[str, datetime] = {}
+    DEDUP_MINUTES = 30
 
     while True:
         scan_start = datetime.utcnow()  # noqa: DTZ003
@@ -282,9 +288,23 @@ async def main_loop(config: dict):
             # Step 11: Send alerts (if not paused)
             if not commands.is_paused():
                 if ranked_alerts:
+                    # Clean expired dedup entries
+                    now = datetime.utcnow()
+                    expired = [k for k, v in _recent_alerts.items()
+                               if (now - v).total_seconds() > DEDUP_MINUTES * 60]
+                    for k in expired:
+                        del _recent_alerts[k]
+
                     for alert in ranked_alerts:
+                        # Dedup key: station + date + trade_type + bin_label
+                        dedup_key = f"{alert.station}_{alert.target_date}_{alert.trade_type}_{alert.bin_label}"
+                        if dedup_key in _recent_alerts:
+                            logger.info("Skipping duplicate alert: %s", dedup_key)
+                            continue
+
                         try:
                             await alerts.send_trade_alert(alert, wallet_state)
+                            _recent_alerts[dedup_key] = now
                             await allocator.reserve_capital(
                                 alert.sized_cost, alert.alert_id
                             )

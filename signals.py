@@ -444,13 +444,28 @@ def check_forecast_yes(station: str, city: str, target_date_val: date,
     if agreeing_models < rules.get("min_model_agreement", 2):
         return None
 
-    # Model probability (simplified — using weight-based estimate)
-    # More sophisticated: normal distribution per model. Simplified version:
-    model_prob = min(0.60, sum(weights.get(m, 0.25) for m, t in forecasts.items()
-                               if target_bin and
-                               (target_bin.bin.low if hasattr(target_bin, "bin") else 0)
-                               <= t <
-                               (target_bin.bin.high if hasattr(target_bin, "bin") else 100)))
+    # Model probability — use normal distribution per model
+    # Each model has a forecast. Assume MAE ~2 degrees as std dev.
+    # P(bin) for each model = fraction of normal dist that falls in the bin.
+    import math
+    model_prob = 0.0
+    total_weight = sum(weights.get(m, 0.25) for m in forecasts)
+    bin_low_val = target_bin.bin.low if hasattr(target_bin, "bin") else 0
+    bin_high_val = target_bin.bin.high if hasattr(target_bin, "bin") else 100
+    
+    for m, t in forecasts.items():
+        w = weights.get(m, 0.25) / max(0.01, total_weight)
+        std_dev = 2.0  # assumed MAE as std dev (will improve with dynamic weighting)
+        # P(bin_low <= temp < bin_high) under Normal(forecast, std_dev)
+        z_low = (bin_low_val - t) / std_dev
+        z_high = (bin_high_val - t) / std_dev
+        # Use error function approximation for CDF
+        def _norm_cdf(z):
+            return 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
+        p_model = _norm_cdf(z_high) - _norm_cdf(z_low)
+        model_prob += w * p_model
+    
+    model_prob = min(0.60, max(0.0, model_prob))
 
     edge = model_prob - yes_price
     min_edge = rules.get("min_edge_pct", 15) / 100.0
@@ -573,6 +588,9 @@ def check_ladder(station: str, city: str, target_date_val: date,
 
         # Include bins within forecast range (+ 1 bin buffer on each side)
         if low >= min_forecast - (high_val - low) and high_val <= max_forecast + (high_val - low):
+            # SKIP bins priced at 0¢ — no liquidity, impossible to trade
+            if yes_price < 0.01:
+                continue
             if yes_price <= rules.get("max_individual_bin_price", 0.10):
                 ladder_bins.append({
                     "label": label,
@@ -637,9 +655,16 @@ def check_ladder(station: str, city: str, target_date_val: date,
 
     score = max(0, min(100, score))
 
-    # EV
-    win_return = 1.0 - (total_cost / len(ladder_bins))  # rough
-    ev = range_prob * win_return * len(ladder_bins) - total_cost
+    # EV — based on actual $5 position, not per-share
+    # If any bin wins, you get $1/share payout on that bin's shares
+    # Total cost is spread across bins. If one bin wins, payout = (cost_on_that_bin / price) * $1
+    # Simplified: avg payout if win = position_size / avg_price, but capped by real sizing
+    avg_price = total_cost / max(1, len(ladder_bins))
+    avg_price = max(0.01, avg_price)  # floor to prevent division explosion
+    est_position = 5.0  # rough $5 position — allocator will finalize
+    est_shares_per_bin = est_position / len(ladder_bins) / avg_price
+    win_payout = est_shares_per_bin * 1.0  # $1 per share if the bin wins
+    ev = range_prob * win_payout - est_position
 
     model_lines = " | ".join(f"{m.upper()} {t:.0f}°{unit}" for m, t in forecasts.items())
 
@@ -651,13 +676,13 @@ def check_ladder(station: str, city: str, target_date_val: date,
         side="YES",
         bin_label=f"Ladder: {len(ladder_bins)} bins",
         bins=ladder_bins,
-        entry_price=total_cost / len(ladder_bins),  # avg
+        entry_price=max(0.01, total_cost / max(1, len(ladder_bins))),  # avg, floored
         confidence_score=score,
         confidence_components=components,
         ev=round(ev, 2),
         win_probability=round(range_prob, 3),
-        profit_if_win=round(win_return * len(ladder_bins), 2),
-        loss_if_lose=round(total_cost, 2),
+        profit_if_win=round(win_payout, 2),
+        loss_if_lose=round(est_position, 2),
         model_summary=f"{model_lines} | Spread: {spread:.1f}°{unit}",
         metar_summary=f"Range: {ladder_bins[0]['label']} to {ladder_bins[-1]['label']}",
     )

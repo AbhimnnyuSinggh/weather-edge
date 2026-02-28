@@ -152,6 +152,8 @@ async def rank_and_size(signals: List[Signal], wallet_state,
         entry_price = signal.entry_price
         if entry_price <= 0:
             continue
+        # Floor entry price to 1¢ to prevent astronomical share counts
+        entry_price = max(0.01, entry_price)
 
         shares = position_size / entry_price
         cost = shares * entry_price
@@ -160,7 +162,8 @@ async def rank_and_size(signals: List[Signal], wallet_state,
         if signal.side == "YES":
             profit_if_win = shares * (1.0 - entry_price)
         else:
-            profit_if_win = shares * (1.0 - entry_price)  # NO win profit
+            # NO win: you paid (1-yes_price) per share, get $1 per share back
+            profit_if_win = shares * entry_price  # entry_price for NO = (1-yes_price), profit = yes_price per share
         loss_if_lose = cost
 
         sized_ev = signal.win_probability * profit_if_win - (1 - signal.win_probability) * loss_if_lose
