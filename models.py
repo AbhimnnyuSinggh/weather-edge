@@ -188,20 +188,36 @@ async def _fetch_open_meteo(station: str, lat: float, lon: float,
     }
 
     results: Dict[str, ModelForecast] = {}
-
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                OPEN_METEO_URL, params=params,
-                timeout=aiohttp.ClientTimeout(total=15)
-            ) as resp:
-                if resp.status != 200:
-                    logger.error("Open-Meteo HTTP %d for %s", resp.status, station)
-                    return results
-                data = await resp.json()
-    except Exception as e:
-        logger.error("Open-Meteo error for %s: %s", station, e)
-        return results
+    
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    OPEN_METEO_URL, params=params,
+                    timeout=aiohttp.ClientTimeout(total=15)
+                ) as resp:
+                    if resp.status == 429:
+                        if attempt < max_retries - 1:
+                            wait_time = 2 ** attempt
+                            logger.warning("Open-Meteo 429 for %s. Retrying in %ds...", station, wait_time)
+                            await asyncio.sleep(wait_time)
+                            continue
+                        else:
+                            logger.error("Open-Meteo HTTP 429: Rate limit exhausted for %s", station)
+                            return results
+                    if resp.status != 200:
+                        logger.error("Open-Meteo HTTP %d for %s", resp.status, station)
+                        return results
+                    data = await resp.json()
+                    break
+        except Exception as e:
+            if attempt < max_retries - 1:
+                logger.warning("Open-Meteo error for %s (attempt %d): %s, retrying...", station, attempt+1, e)
+                await asyncio.sleep(1)
+            else:
+                logger.error("Open-Meteo final error for %s: %s", station, e)
+                return results
 
     # Open-Meteo returns separate daily arrays per model
     # The response structure varies — handle both flat and per-model formats
@@ -476,7 +492,11 @@ async def _fetch_tomorrow_io(station: str, lat: float, lon: float,
                     logger.warning("Tomorrow.io rate limit reached")
                     return None
                 if resp.status != 200:
-                    logger.warning("Tomorrow.io HTTP %d for %s", resp.status, station)
+                    msg = f"Tomorrow.io HTTP {resp.status} for {station}"
+                    if resp.status == 401:
+                        logger.warning("%s (Check API Key)", msg)
+                    else:
+                        logger.error(msg)
                     return None
                 data = await resp.json()
 
@@ -551,7 +571,11 @@ async def _fetch_openweather(station: str, lat: float, lon: float,
                     logger.warning("OpenWeather rate limit reached")
                     return None
                 if resp.status != 200:
-                    logger.warning("OpenWeather HTTP %d for %s", resp.status, station)
+                    msg = f"OpenWeather HTTP {resp.status} for {station}"
+                    if resp.status == 401:
+                        logger.warning("%s (Check API Key)", msg)
+                    else:
+                        logger.error(msg)
                     return None
                 data = await resp.json()
 

@@ -58,6 +58,8 @@ def load_config() -> dict:
         return yaml.safe_load(f)
 
 
+import telegram.error
+
 # ---------------------------------------------------------------------------
 # Telegram bot setup
 # ---------------------------------------------------------------------------
@@ -67,15 +69,37 @@ async def setup_telegram(config: dict) -> Application:
     app = Application.builder().token(token).build()
     commands.register_handlers(app)
     await app.initialize()
+    
+    # Force delete any lingering webhooks that might conflict with polling
+    try:
+        await app.bot.delete_webhook(drop_pending_updates=True)
+    except Exception as e:
+        logger.warning("Could not delete webhook: %s", e)
+
     await app.start()
-    # Wait for old instance to release the polling lock during redeploys
-    await asyncio.sleep(15)
-    # Start polling in background (non-blocking)
-    await app.updater.start_polling(
-        drop_pending_updates=True,
-        allowed_updates=["message"],
-    )
-    logger.info("Telegram bot started")
+    
+    # Start polling in background (non-blocking) with conflict handling
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            await app.updater.start_polling(
+                drop_pending_updates=True,
+                allowed_updates=["message"],
+            )
+            logger.info("Telegram bot started polling successfully.")
+            break
+        except telegram.error.Conflict as e:
+            logger.warning("Telegram Conflict (Attempt %d/%d) - Old instance still running? %s", attempt+1, max_retries, e)
+            if attempt < max_retries - 1:
+                logger.info("Sleeping 15 seconds before retry...")
+                await asyncio.sleep(15)
+            else:
+                logger.error("Failed to start polling after %d attempts due to Conflict.", max_retries)
+                raise
+        except Exception as e:
+            logger.error("Unexpected error starting Telegram polling: %s", e)
+            raise
+
     return app
 
 
