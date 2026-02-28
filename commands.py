@@ -53,6 +53,7 @@ async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ws = await wallet_mod.sync()
         balance = ws.balance
         total = ws.total_value
+        source_label = "🟢 Live" if ws.source == "api" else "🟡 DB fallback"
 
         positions_text = ""
         if ws.positions:
@@ -66,23 +67,15 @@ async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         else:
             positions_text = "  No open positions\n"
 
-        # Today's P&L
-        today_trades = await tracker.get_today_trades()
-        today_pnl = sum(
-            (t["profit_loss"] or 0) for t in today_trades if t["resolved"]
-        )
-        today_sign = "+" if today_pnl >= 0 else ""
-
         deployed = sum(p.cost for p in ws.positions)
         idle = balance
 
         msg = (
-            f"📊 STATUS | {_ist_now()}\n\n"
-            f"💰 Balance: ${balance:.2f}\n"
+            f"📊 STATUS | {_ist_now()} | {source_label}\n\n"
+            f"💰 Cash: ${balance:.2f}\n"
             f"📈 Total value: ${total:.2f}\n"
-            f"📊 Deployed: ${deployed:.2f} | Idle: ${idle:.2f}\n"
-            f"Today P&L: {today_sign}${today_pnl:.2f}\n\n"
-            f"Open positions:\n{positions_text}"
+            f"📊 Deployed: ${deployed:.2f} | Idle: ${idle:.2f}\n\n"
+            f"Open positions ({len(ws.positions)}):\n{positions_text}"
         )
 
         await update.message.reply_text(msg)
@@ -244,6 +237,91 @@ async def cmd_setcapital(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 # ---------------------------------------------------------------------------
+# /took — manual trade entry
+# ---------------------------------------------------------------------------
+async def cmd_took(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    Manually log a trade.
+    Usage: /took STATION SIDE "BIN" SHARES PRICE
+    Example: /took RKSI YES "8-9°C" 50 0.15
+    """
+    usage = (
+        "Usage: /took STATION SIDE BIN SHARES PRICE\n"
+        "Example: /took RKSI YES 8-9°C 50 0.15"
+    )
+    try:
+        if not ctx.args or len(ctx.args) < 5:
+            await update.message.reply_text(usage)
+            return
+
+        station = ctx.args[0].upper()
+        side = ctx.args[1].upper()
+        bin_label = ctx.args[2]
+        shares = float(ctx.args[3])
+        price = float(ctx.args[4])
+        cost = shares * price
+
+        trade_id = await tracker.log_manual_trade({
+            "station": station,
+            "side": side,
+            "bin_label": bin_label,
+            "shares": shares,
+            "entry_price": price,
+            "cost": cost,
+        })
+
+        await update.message.reply_text(
+            f"✅ Trade logged (ID: {trade_id})\n"
+            f"  {station} {side} \"{bin_label}\"\n"
+            f"  {shares:.0f} shares @ {price*100:.0f}¢ = ${cost:.2f}"
+        )
+    except Exception as e:
+        logger.error("/took error: %s", e)
+        await update.message.reply_text(f"❌ Error: {e}\n\n{usage}")
+
+
+# ---------------------------------------------------------------------------
+# /resolve — manual trade resolution
+# ---------------------------------------------------------------------------
+async def cmd_resolve(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    Manually resolve a trade.
+    Usage: /resolve TRADE_ID win|loss [ACTUAL_HIGH]
+    Example: /resolve 5 win 42.3
+    """
+    usage = (
+        "Usage: /resolve TRADE_ID win|loss [ACTUAL_HIGH_F]\n"
+        "Example: /resolve 5 win 42.3"
+    )
+    try:
+        if not ctx.args or len(ctx.args) < 2:
+            await update.message.reply_text(usage)
+            return
+
+        trade_id = int(ctx.args[0])
+        outcome = ctx.args[1].lower()
+        actual_high = float(ctx.args[2]) if len(ctx.args) > 2 else None
+
+        if outcome not in ("win", "loss", "push"):
+            await update.message.reply_text("Outcome must be: win, loss, or push")
+            return
+
+        result = await tracker.resolve_trade(trade_id, outcome, actual_high)
+        if result:
+            pnl = result.get("profit_loss", 0)
+            sign = "+" if pnl >= 0 else ""
+            await update.message.reply_text(
+                f"✅ Trade #{trade_id} resolved: {outcome.upper()}\n"
+                f"  P&L: {sign}${pnl:.2f}"
+            )
+        else:
+            await update.message.reply_text(f"❌ Trade #{trade_id} not found.")
+    except Exception as e:
+        logger.error("/resolve error: %s", e)
+        await update.message.reply_text(f"❌ Error: {e}\n\n{usage}")
+
+
+# ---------------------------------------------------------------------------
 # Register handlers
 # ---------------------------------------------------------------------------
 def register_handlers(app: Application):
@@ -258,6 +336,8 @@ def register_handlers(app: Application):
     app.add_handler(CommandHandler("resume", cmd_resume))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("setcapital", cmd_setcapital))
+    app.add_handler(CommandHandler("took", cmd_took))
+    app.add_handler(CommandHandler("resolve", cmd_resolve))
     logger.info("Telegram command handlers registered")
 
 

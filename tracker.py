@@ -343,9 +343,71 @@ async def get_today_trades() -> List[asyncpg.Record]:
         )
 
 
-# ---------------------------------------------------------------------------
-# Resolution processing
-# ---------------------------------------------------------------------------
+async def log_manual_trade(trade: dict) -> int:
+    """Insert a manually-entered trade and return its ID."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO trades
+                (station, target_date, bin_label, side, trade_type,
+                 entry_price, shares, cost)
+            VALUES ($1, CURRENT_DATE, $2, $3, 'manual', $4, $5, $6)
+            RETURNING id
+            """,
+            trade["station"],
+            trade["bin_label"],
+            trade["side"],
+            trade["entry_price"],
+            trade["shares"],
+            trade["cost"],
+        )
+        trade_id = row["id"]
+        logger.info("Manual trade logged: id=%d %s %s %s",
+                     trade_id, trade["station"], trade["side"], trade["bin_label"])
+        return trade_id
+
+
+async def resolve_trade(trade_id: int, outcome: str,
+                         actual_high: Optional[float] = None) -> Optional[dict]:
+    """Manually resolve a trade by ID. Returns result dict or None."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        trade = await conn.fetchrow("SELECT * FROM trades WHERE id=$1", trade_id)
+        if not trade:
+            return None
+
+        cost = float(trade["cost"])
+        shares = float(trade["shares"])
+
+        if outcome == "win":
+            payout = shares  # YES pays $1/share on win
+            profit_loss = payout - cost
+        elif outcome == "loss":
+            payout = 0.0
+            profit_loss = -cost
+        else:  # push/void
+            payout = cost
+            profit_loss = 0.0
+
+        await conn.execute(
+            """
+            UPDATE trades SET
+                resolved=TRUE, resolved_at=NOW(),
+                outcome=$1, payout=$2, profit_loss=$3
+            WHERE id=$4
+            """,
+            outcome, payout, profit_loss, trade_id,
+        )
+
+        logger.info("Trade #%d resolved: %s pnl=%.2f", trade_id, outcome, profit_loss)
+
+        # Update daily summary
+        await _update_daily_summary_on_resolution(outcome, profit_loss, payout, cost)
+
+        return {"trade_id": trade_id, "outcome": outcome, "profit_loss": profit_loss}
+
+
 async def process_resolution(resolved_position: dict):
     """
     Mark a trade as resolved and update P&L.
