@@ -58,7 +58,9 @@ async def generate_all(metar_data: dict, model_data: dict,
                         wallet_state, config: dict,
                         stations_cfg: dict) -> List[Signal]:
     """
-    For each station/date combo, generate all qualifying signals.
+    For each station/date combo, generate signals via:
+    1. Legacy 4 trade types (lockin, no_tail, forecast_yes, ladder)
+    2. NEW: Distribution-based unified edge scanner
     """
     all_signals: List[Signal] = []
     min_conf = config.get("trading", {}).get("min_confidence", 40)
@@ -93,12 +95,11 @@ async def generate_all(metar_data: dict, model_data: dict,
                     else trade_rules.get("lockin_yes", {}).get("non_coastal_min_local_hour", 14))
 
         is_afternoon = local_hour >= min_hour
-        station_today = now_local.date()  # Use station-local date, not UTC
+        station_today = now_local.date()
         is_today = target_date_val == station_today if target_date_val else False
 
-        # --- Afternoon plays (today's market only) ---
+        # --- Legacy: Afternoon plays (today's market only) ---
         if is_afternoon and is_today and metar:
-            # Lock-in YES
             lockin = check_lockin_yes(
                 station, city, target_date_val, metar, bins_list, prob,
                 trade_rules, cfg, local_hour,
@@ -106,14 +107,13 @@ async def generate_all(metar_data: dict, model_data: dict,
             if lockin and lockin.confidence_score >= min_conf:
                 all_signals.append(lockin)
 
-            # NO tails
             no_tails = check_no_tail(
                 station, city, target_date_val, metar, bins_list, prob,
                 trade_rules, cfg,
             )
             all_signals.extend(s for s in no_tails if s.confidence_score >= min_conf)
 
-        # --- Forecast plays (tomorrow's market or early today) ---
+        # --- Legacy: Forecast plays ---
         if not is_afternoon or not is_today:
             forecast = check_forecast_yes(
                 station, city, target_date_val, models, bins_list,
@@ -129,7 +129,175 @@ async def generate_all(metar_data: dict, model_data: dict,
             if ladder and ladder.confidence_score >= min_conf:
                 all_signals.append(ladder)
 
+        # --- NEW: Distribution-based unified edge scanner ---
+        if models and bins_list:
+            edge_signals = _scan_edges(
+                station, city, target_date_val, models, bins_list,
+                metar, cfg, unit, trade_rules,
+            )
+            # Add edge signals that don't duplicate existing signals
+            existing_bins = {(s.bin_label, s.side) for s in all_signals}
+            for es in edge_signals:
+                if (es.bin_label, es.side) not in existing_bins and es.confidence_score >= min_conf:
+                    all_signals.append(es)
+
     return all_signals
+
+
+# ---------------------------------------------------------------------------
+# Unified Edge Scanner (Distribution-based)
+# ---------------------------------------------------------------------------
+def _scan_edges(station: str, city: str, target_date_val: date,
+                models_data: dict, bins: list,
+                metar: Optional[StationMETAR],
+                station_cfg: dict, unit: str,
+                trade_rules: dict) -> List[Signal]:
+    """
+    Scan all bins for YES/NO mispricing using distribution probabilities.
+    Discovers: edge_yes, edge_no, and edge_ladder signals.
+    """
+    from distribution import build_bin_distribution
+
+    # Build probability distribution
+    dist = build_bin_distribution(models_data, bins, unit)
+    if not dist:
+        return []
+
+    signals = []
+    edge_bins = []  # For ladder detection
+
+    for mbin in bins:
+        b = mbin.bin if hasattr(mbin, "bin") else mbin
+        label = b.label if hasattr(b, "label") else b.get("label", "")
+        yes_price = mbin.yes_price if hasattr(mbin, "yes_price") else mbin.get("yes_price", 0)
+        market_id = mbin.market_id if hasattr(mbin, "market_id") else mbin.get("market_id", "")
+        poly_url = mbin.polymarket_url if hasattr(mbin, "polymarket_url") else mbin.get("polymarket_url", "")
+
+        model_prob = dist.get(label, 0)
+        no_price = 1.0 - yes_price
+
+        yes_edge = model_prob - yes_price
+        no_edge = (1.0 - model_prob) - no_price
+
+        # --- YES edge signal ---
+        if yes_edge > 0.10 and yes_price > 0.01:
+            confidence = _edge_confidence(yes_edge, model_prob, metar, "YES")
+            ev = _calc_ev(model_prob, yes_price, "YES")
+
+            signals.append(Signal(
+                trade_type="edge_yes",
+                station=station, city=city,
+                target_date=target_date_val,
+                side="YES", bin_label=label,
+                entry_price=yes_price,
+                confidence_score=confidence,
+                confidence_components={"edge": int(yes_edge * 100), "model_prob": int(model_prob * 100)},
+                ev=round(ev, 2),
+                win_probability=round(model_prob, 3),
+                profit_if_win=round(10 * (1.0 - yes_price), 2),
+                loss_if_lose=round(10 * yes_price, 2),
+                market_id=market_id,
+                polymarket_url=poly_url,
+                model_summary=f"Dist: {model_prob*100:.0f}% vs Mkt: {yes_price*100:.0f}¢ (edge +{yes_edge*100:.0f}%)",
+            ))
+
+        # --- NO edge signal ---
+        if no_edge > 0.10 and no_price > 0.01:
+            no_prob = 1.0 - model_prob
+            confidence = _edge_confidence(no_edge, no_prob, metar, "NO")
+            ev = _calc_ev(no_prob, no_price, "NO")
+
+            signals.append(Signal(
+                trade_type="edge_no",
+                station=station, city=city,
+                target_date=target_date_val,
+                side="NO", bin_label=label,
+                entry_price=no_price,
+                confidence_score=confidence,
+                confidence_components={"edge": int(no_edge * 100), "model_prob": int(no_prob * 100)},
+                ev=round(ev, 2),
+                win_probability=round(no_prob, 3),
+                profit_if_win=round(10 * (1.0 - no_price), 2),
+                loss_if_lose=round(10 * no_price, 2),
+                market_id=market_id,
+                polymarket_url=poly_url,
+                model_summary=f"Dist: {no_prob*100:.0f}% NO vs Mkt: {no_price*100:.0f}¢ (edge +{no_edge*100:.0f}%)",
+            ))
+
+        # Track bins with YES edge for ladder detection
+        if yes_edge > 0.05 and yes_price > 0.01:
+            edge_bins.append({
+                "label": label, "yes_price": yes_price,
+                "model_prob": model_prob, "edge": yes_edge,
+                "market_id": market_id, "polymarket_url": poly_url,
+            })
+
+    # --- Ladder from consecutive edge bins ---
+    if len(edge_bins) >= 3:
+        total_cost = sum(b["yes_price"] for b in edge_bins)
+        total_prob = sum(b["model_prob"] for b in edge_bins)
+        avg_edge = sum(b["edge"] for b in edge_bins) / len(edge_bins)
+
+        if total_prob > total_cost * 1.5:  # Favorable cost ratio
+            confidence = min(85, int(avg_edge * 200) + len(edge_bins) * 5)
+
+            model_lines = " | ".join(
+                f"{b['label']}: {b['model_prob']*100:.0f}% vs {b['yes_price']*100:.0f}¢"
+                for b in edge_bins
+            )
+
+            signals.append(Signal(
+                trade_type="edge_ladder",
+                station=station, city=city,
+                target_date=target_date_val,
+                side="YES",
+                bin_label=f"Ladder: {len(edge_bins)} bins",
+                bins=[{
+                    "label": b["label"], "yes_price": b["yes_price"],
+                    "market_id": b["market_id"], "polymarket_url": b["polymarket_url"],
+                } for b in edge_bins],
+                entry_price=total_cost / max(1, len(edge_bins)),
+                confidence_score=confidence,
+                confidence_components={"avg_edge": int(avg_edge * 100), "bins": len(edge_bins)},
+                ev=round((total_prob - total_cost) * 10, 2),
+                win_probability=round(total_prob, 3),
+                profit_if_win=round(10 * (1.0 - total_cost / max(1, len(edge_bins))), 2),
+                loss_if_lose=round(10 * total_cost / max(1, len(edge_bins)), 2),
+                model_summary=model_lines,
+            ))
+
+    return signals
+
+
+def _edge_confidence(edge: float, prob: float,
+                      metar: Optional[StationMETAR], side: str) -> int:
+    """Calculate confidence score for an edge signal."""
+    score = 0
+    # Edge size (max 40)
+    score += min(40, int(edge * 200))
+    # Model probability strength (max 25)
+    score += min(25, int(prob * 30))
+    # METAR confirmation boost (max 15)
+    if metar and metar.velocity:
+        if side == "YES" and metar.velocity.trend == "falling":
+            score += 15  # Falling temp confirms the high is set
+        elif side == "NO" and metar.velocity.trend == "falling":
+            score += 10  # Some confirmation for NO plays too
+    # Base (10)
+    score += 10
+    return max(0, min(100, score))
+
+
+def _calc_ev(prob: float, price: float, side: str) -> float:
+    """Expected value calculation."""
+    est_shares = 10
+    if side == "YES":
+        profit_if_win = est_shares * (1.0 - price)
+        loss_if_lose = est_shares * price
+    else:
+        profit_if_win = est_shares * (1.0 - price)
+        loss_if_lose = est_shares * price
+    return prob * profit_if_win - (1 - prob) * loss_if_lose
 
 
 # ---------------------------------------------------------------------------
