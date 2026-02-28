@@ -160,19 +160,23 @@ async def get_today_metar(station: str, station_tz: str) -> List[asyncpg.Record]
 async def store_forecast(station: str, target_date: date, model_name: str,
                          raw_high_c: float, raw_high_f: float,
                          bias_corrected_c: float, bias_corrected_f: float):
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        await conn.execute(
-            """
-            INSERT INTO model_forecasts
-                (station, target_date, model_name, raw_high_c, raw_high_f,
-                 bias_corrected_c, bias_corrected_f)
-            VALUES ($1,$2,$3,$4,$5,$6,$7)
-            ON CONFLICT DO NOTHING
-            """,
-            station, target_date, model_name,
-            raw_high_c, raw_high_f, bias_corrected_c, bias_corrected_f,
-        )
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO model_forecasts
+                    (station, target_date, model_name, raw_high_c, raw_high_f,
+                     bias_corrected_c, bias_corrected_f)
+                VALUES ($1,$2,$3,$4,$5,$6,$7)
+                ON CONFLICT DO NOTHING
+                """,
+                station, target_date, model_name,
+                raw_high_c, raw_high_f, bias_corrected_c, bias_corrected_f,
+            )
+    except Exception as e:
+        import logging
+        logging.getLogger("tracker").warning("Skipping DB insert for %s %s (DB error, possibly missing station): %e", station, model_name, e)
 
 
 async def get_latest_forecasts(station: str, target_date: date) -> List[asyncpg.Record]:

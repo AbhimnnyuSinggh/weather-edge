@@ -219,27 +219,24 @@ async def _fetch_open_meteo(station: str, lat: float, lon: float,
                 logger.error("Open-Meteo final error for %s: %s", station, e)
                 return results
 
-    # Open-Meteo returns separate daily arrays per model
-    # The response structure varies — handle both flat and per-model formats
+    daily = data.get("daily", {})
+    if not daily:
+        logger.error("Open-Meteo returned no daily data for %s", station)
+        return results
+
     today = date.today()
-    tomorrow = date.today() + timedelta(days=1)
 
     for model_key, api_name in model_map.items():
         if model_key not in model_list:
             continue
 
-        # Try per-model format first (newer API)
-        daily_key = f"temperature_2m_max"
-        model_daily = None
-
-        if "daily" in data:
-            daily = data["daily"]
-            # Check for model-specific key
-            model_specific_key = f"temperature_2m_max_{api_name}"
-            if model_specific_key in daily:
-                model_daily = daily[model_specific_key]
-            elif daily_key in daily:
-                model_daily = daily[daily_key]
+        model_specific_key = f"temperature_2m_max_{api_name}"
+        if model_specific_key in daily:
+            model_daily = daily[model_specific_key]
+        elif "temperature_2m_max" in daily:
+            model_daily = daily["temperature_2m_max"]
+        else:
+            model_daily = None
 
         if not model_daily or not daily.get("time"):
             logger.debug("No data for model %s (%s) at station %s", model_key, api_name, station)
@@ -272,9 +269,12 @@ async def _fetch_open_meteo(station: str, lat: float, lon: float,
                 bias_corrected_f=corrected_f,
                 weight=weight,
             )
-            results[model_key] = forecast
+            
+            # Prioritize today's forecast over tomorrow's
+            if model_key not in results or target_date == today:
+                results[model_key] = forecast
 
-            # Store in database
+            # Store in database (protected against missing stations by try/except inside store_forecast)
             await tracker.store_forecast(
                 station, target_date, model_key,
                 raw_high_c, raw_high_f, corrected_c, corrected_f,
