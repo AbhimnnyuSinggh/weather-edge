@@ -1,14 +1,20 @@
 """
 models.py — Model Forecasts, Bias Correction, Dynamic Weighting
 
-Fetches weather model forecasts from Open-Meteo (GFS, ECMWF, ICON) and
-NWS (US stations only). Applies station bias correction. Maintains dynamic
-model weights based on historical accuracy. Detects intra-day momentum
-divergence.
+Fetches weather model forecasts from multiple sources:
+- Open-Meteo (GFS, ECMWF, ICON) — free, no key
+- NWS (US stations only) — free, no key
+- Tomorrow.io — 500 free calls/day
+- OpenWeather — 1000 free calls/day
+- Weatherbit — 50 free calls/day
+- NOAA MOS — free, no key, US only
+- Open-Meteo Ensemble (31 GFS members) — free, no key
 """
 
 import logging
-from dataclasses import dataclass
+import os
+import re
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional
 
@@ -19,9 +25,26 @@ import tracker
 logger = logging.getLogger("models")
 
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
+OPEN_METEO_ENSEMBLE_URL = "https://ensemble-api.open-meteo.com/v1/ensemble"
 NWS_POINTS_URL = "https://api.weather.gov/points"
+TOMORROW_IO_URL = "https://api.tomorrow.io/v4/weather/forecast"
+OPENWEATHER_URL = "https://api.openweathermap.org/data/3.0/onecall"
+WEATHERBIT_URL = "https://api.weatherbit.io/v2.0/forecast/daily"
+NOAA_MOS_URL = "https://aviationweather.gov/cgi-bin/data/mos.php"
 USER_AGENT = "WeatherEdgeBot/1.0"
 EWMA_ALPHA = 0.15  # ~90% weight to last 13 data points
+
+# Default MAE per model (°C) — used for distribution calculations
+DEFAULT_MAE = {
+    "gfs": 2.0, "ecmwf": 1.5, "icon": 2.0, "nws": 1.8,
+    "tomorrow_io": 2.0, "openweather": 2.2, "weatherbit": 2.5,
+    "noaa_mos": 1.8, "ensemble": 1.0,
+}
+
+# Rate limit tracking (resets per scan cycle)
+_rate_limit_status: Dict[str, str] = {}  # source -> "ok" | "limited" | "no_key"
+_weatherbit_calls_today: int = 0
+_weatherbit_reset_date: Optional[date] = None
 
 
 # ---------------------------------------------------------------------------
@@ -47,30 +70,75 @@ class ModelForecast:
 # ---------------------------------------------------------------------------
 # Fetch all stations
 # ---------------------------------------------------------------------------
+def get_rate_limit_status() -> Dict[str, str]:
+    """Return current rate limit status for all sources."""
+    return dict(_rate_limit_status)
+
+
+def reset_rate_limits():
+    """Reset rate limits at the start of each scan cycle."""
+    global _rate_limit_status
+    _rate_limit_status = {}
+
+
 async def fetch_all_stations(stations_cfg: dict) -> Dict[str, Dict[str, ModelForecast]]:
     """
-    For each active station, fetch forecasts from all configured models.
+    For each active station, fetch forecasts from ALL available sources.
     Returns nested dict: {station: {model_name: ModelForecast}}
+    Sources used/skipped are logged at the end.
     """
+    global _rate_limit_status
+    reset_rate_limits()
     results: Dict[str, Dict[str, ModelForecast]] = {}
 
     for icao, cfg in stations_cfg.items():
         results[icao] = {}
         model_list = cfg.get("models", ["gfs", "ecmwf", "icon"])
+        lat, lon = cfg["lat"], cfg["lon"]
 
-        # Open-Meteo models
+        # 1) Open-Meteo deterministic (GFS, ECMWF, ICON)
         open_meteo_models = [m for m in model_list if m in ("gfs", "ecmwf", "icon")]
         if open_meteo_models:
-            om_results = await _fetch_open_meteo(
-                icao, cfg["lat"], cfg["lon"], open_meteo_models, cfg
-            )
+            om_results = await _fetch_open_meteo(icao, lat, lon, open_meteo_models, cfg)
             results[icao].update(om_results)
 
-        # NWS (US stations only)
-        if "nws" in model_list and cfg.get("country") == "US":
-            nws_result = await _fetch_nws(icao, cfg["lat"], cfg["lon"], cfg)
+        # 2) NWS (US stations only)
+        if cfg.get("country") == "US":
+            nws_result = await _fetch_nws(icao, lat, lon, cfg)
             if nws_result:
                 results[icao]["nws"] = nws_result
+
+        # 3) Tomorrow.io
+        if _rate_limit_status.get("tomorrow_io") != "limited":
+            tio_result = await _fetch_tomorrow_io(icao, lat, lon, cfg)
+            if tio_result:
+                results[icao]["tomorrow_io"] = tio_result
+
+        # 4) OpenWeather
+        if _rate_limit_status.get("openweather") != "limited":
+            ow_result = await _fetch_openweather(icao, lat, lon, cfg)
+            if ow_result:
+                results[icao]["openweather"] = ow_result
+
+        # 5) Weatherbit (strict 50/day limit)
+        if _rate_limit_status.get("weatherbit") != "limited":
+            wb_result = await _fetch_weatherbit(icao, lat, lon, cfg)
+            if wb_result:
+                results[icao]["weatherbit"] = wb_result
+
+        # 6) NOAA MOS (US stations only)
+        if cfg.get("country") == "US":
+            mos_result = await _fetch_noaa_mos(icao, cfg)
+            if mos_result:
+                results[icao]["noaa_mos"] = mos_result
+
+    # Log source summary
+    sources_used = set()
+    for icao_data in results.values():
+        sources_used.update(icao_data.keys())
+    sources_limited = {k: v for k, v in _rate_limit_status.items() if v != "ok"}
+    logger.info("Forecasts collected: %s | Limited: %s",
+                list(sources_used), sources_limited if sources_limited else "none")
 
     return results
 
@@ -258,6 +326,309 @@ async def _fetch_nws(station: str, lat: float, lon: float,
             )
             return forecast
 
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Tomorrow.io fetch (500 free/day)
+# ---------------------------------------------------------------------------
+async def _fetch_tomorrow_io(station: str, lat: float, lon: float,
+                              station_cfg: dict) -> Optional[ModelForecast]:
+    """Fetch from Tomorrow.io weather API."""
+    api_key = os.environ.get("TOMORROWIO_API_KEY")
+    if not api_key:
+        _rate_limit_status["tomorrow_io"] = "no_key"
+        return None
+
+    try:
+        params = {
+            "location": f"{lat},{lon}",
+            "apikey": api_key,
+            "timesteps": "1d",
+            "units": "metric",
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                TOMORROW_IO_URL, params=params,
+                headers={"User-Agent": USER_AGENT},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status == 429:
+                    _rate_limit_status["tomorrow_io"] = "limited"
+                    logger.warning("Tomorrow.io rate limit reached")
+                    return None
+                if resp.status != 200:
+                    logger.warning("Tomorrow.io HTTP %d for %s", resp.status, station)
+                    return None
+                data = await resp.json()
+
+        _rate_limit_status["tomorrow_io"] = "ok"
+
+        # Parse daily data
+        timelines = data.get("timelines", {}).get("daily", [])
+        if not timelines:
+            return None
+
+        # Use tomorrow's forecast (index 1) or today (index 0)
+        day = timelines[1] if len(timelines) > 1 else timelines[0]
+        values = day.get("values", {})
+        raw_high_c = float(values.get("temperatureMax", 0))
+        raw_high_f = raw_high_c * 9.0 / 5.0 + 32.0
+
+        target_date_str = day.get("time", "")[:10]
+        try:
+            target_date = date.fromisoformat(target_date_str)
+        except ValueError:
+            target_date = date.today() + timedelta(days=1)
+
+        bias_c = await _get_bias(station, "tomorrow_io", station_cfg)
+        corrected_c = raw_high_c - bias_c
+        corrected_f = corrected_c * 9.0 / 5.0 + 32.0
+        weight = await _get_weight(station, "tomorrow_io")
+
+        forecast = ModelForecast(
+            station=station, model_name="tomorrow_io",
+            target_date=target_date,
+            raw_high_c=raw_high_c, raw_high_f=raw_high_f,
+            bias_corrected_c=corrected_c, bias_corrected_f=corrected_f,
+            weight=weight,
+        )
+        await tracker.store_forecast(
+            station, target_date, "tomorrow_io",
+            raw_high_c, raw_high_f, corrected_c, corrected_f,
+        )
+        return forecast
+
+    except Exception as e:
+        logger.error("Tomorrow.io error for %s: %s", station, e)
+        return None
+
+
+# ---------------------------------------------------------------------------
+# OpenWeather fetch (1000 free/day)
+# ---------------------------------------------------------------------------
+async def _fetch_openweather(station: str, lat: float, lon: float,
+                              station_cfg: dict) -> Optional[ModelForecast]:
+    """Fetch from OpenWeather OneCall API."""
+    api_key = os.environ.get("OPENWEATHER_API_KEY")
+    if not api_key:
+        _rate_limit_status["openweather"] = "no_key"
+        return None
+
+    try:
+        params = {
+            "lat": lat, "lon": lon,
+            "appid": api_key,
+            "units": "metric",
+            "exclude": "minutely,hourly,alerts",
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                OPENWEATHER_URL, params=params,
+                headers={"User-Agent": USER_AGENT},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status == 429:
+                    _rate_limit_status["openweather"] = "limited"
+                    logger.warning("OpenWeather rate limit reached")
+                    return None
+                if resp.status != 200:
+                    logger.warning("OpenWeather HTTP %d for %s", resp.status, station)
+                    return None
+                data = await resp.json()
+
+        _rate_limit_status["openweather"] = "ok"
+
+        daily = data.get("daily", [])
+        if len(daily) < 2:
+            return None
+
+        day = daily[1]  # Tomorrow
+        raw_high_c = float(day.get("temp", {}).get("max", 0))
+        raw_high_f = raw_high_c * 9.0 / 5.0 + 32.0
+        target_date = date.today() + timedelta(days=1)
+
+        bias_c = await _get_bias(station, "openweather", station_cfg)
+        corrected_c = raw_high_c - bias_c
+        corrected_f = corrected_c * 9.0 / 5.0 + 32.0
+        weight = await _get_weight(station, "openweather")
+
+        forecast = ModelForecast(
+            station=station, model_name="openweather",
+            target_date=target_date,
+            raw_high_c=raw_high_c, raw_high_f=raw_high_f,
+            bias_corrected_c=corrected_c, bias_corrected_f=corrected_f,
+            weight=weight,
+        )
+        await tracker.store_forecast(
+            station, target_date, "openweather",
+            raw_high_c, raw_high_f, corrected_c, corrected_f,
+        )
+        return forecast
+
+    except Exception as e:
+        logger.error("OpenWeather error for %s: %s", station, e)
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Weatherbit fetch (50 free/day — strict limit)
+# ---------------------------------------------------------------------------
+async def _fetch_weatherbit(station: str, lat: float, lon: float,
+                             station_cfg: dict) -> Optional[ModelForecast]:
+    """Fetch from Weatherbit daily forecast. Tracks call count."""
+    global _weatherbit_calls_today, _weatherbit_reset_date
+
+    api_key = os.environ.get("WEATHERBIT_API_KEY")
+    if not api_key:
+        _rate_limit_status["weatherbit"] = "no_key"
+        return None
+
+    # Reset daily counter
+    today = date.today()
+    if _weatherbit_reset_date != today:
+        _weatherbit_calls_today = 0
+        _weatherbit_reset_date = today
+
+    if _weatherbit_calls_today >= 45:  # Buffer of 5 from 50 limit
+        _rate_limit_status["weatherbit"] = "limited"
+        logger.debug("Weatherbit daily limit approaching (%d/50)", _weatherbit_calls_today)
+        return None
+
+    try:
+        params = {
+            "lat": lat, "lon": lon,
+            "key": api_key,
+            "days": 2,
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                WEATHERBIT_URL, params=params,
+                headers={"User-Agent": USER_AGENT},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                _weatherbit_calls_today += 1
+                if resp.status == 429:
+                    _rate_limit_status["weatherbit"] = "limited"
+                    logger.warning("Weatherbit rate limit reached")
+                    return None
+                if resp.status != 200:
+                    logger.warning("Weatherbit HTTP %d for %s", resp.status, station)
+                    return None
+                data = await resp.json()
+
+        _rate_limit_status["weatherbit"] = "ok"
+
+        days = data.get("data", [])
+        if len(days) < 2:
+            return None
+
+        day = days[1]  # Tomorrow
+        raw_high_c = float(day.get("max_temp", 0))
+        raw_high_f = raw_high_c * 9.0 / 5.0 + 32.0
+
+        date_str = day.get("datetime", "")
+        try:
+            target_date = date.fromisoformat(date_str)
+        except ValueError:
+            target_date = date.today() + timedelta(days=1)
+
+        bias_c = await _get_bias(station, "weatherbit", station_cfg)
+        corrected_c = raw_high_c - bias_c
+        corrected_f = corrected_c * 9.0 / 5.0 + 32.0
+        weight = await _get_weight(station, "weatherbit")
+
+        forecast = ModelForecast(
+            station=station, model_name="weatherbit",
+            target_date=target_date,
+            raw_high_c=raw_high_c, raw_high_f=raw_high_f,
+            bias_corrected_c=corrected_c, bias_corrected_f=corrected_f,
+            weight=weight,
+        )
+        await tracker.store_forecast(
+            station, target_date, "weatherbit",
+            raw_high_c, raw_high_f, corrected_c, corrected_f,
+        )
+        return forecast
+
+    except Exception as e:
+        logger.error("Weatherbit error for %s: %s", station, e)
+        return None
+
+
+# ---------------------------------------------------------------------------
+# NOAA MOS fetch (free, no key, US stations only)
+# ---------------------------------------------------------------------------
+async def _fetch_noaa_mos(station: str,
+                           station_cfg: dict) -> Optional[ModelForecast]:
+    """
+    Parse NOAA MOS (Model Output Statistics) text for MAX temperature.
+    MOS is statistically post-processed GFS — often more accurate than raw GFS.
+    Only available for US stations.
+    """
+    try:
+        params = {"ids": station, "type": "mav"}
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                NOAA_MOS_URL, params=params,
+                headers={"User-Agent": USER_AGENT},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status != 200:
+                    logger.debug("NOAA MOS HTTP %d for %s", resp.status, station)
+                    return None
+                text = await resp.text()
+
+        if not text or station not in text:
+            return None
+
+        # Parse MAX line from MOS text
+        max_temp_f = _parse_mos_max_temp(text)
+        if max_temp_f is None:
+            logger.debug("NOAA MOS: no MAX temp found for %s", station)
+            return None
+
+        raw_high_f = float(max_temp_f)
+        raw_high_c = (raw_high_f - 32.0) * 5.0 / 9.0
+        target_date = date.today()  # MOS MAX is for today
+
+        bias_c = await _get_bias(station, "noaa_mos", station_cfg)
+        corrected_c = raw_high_c - bias_c
+        corrected_f = corrected_c * 9.0 / 5.0 + 32.0
+        weight = await _get_weight(station, "noaa_mos")
+
+        forecast = ModelForecast(
+            station=station, model_name="noaa_mos",
+            target_date=target_date,
+            raw_high_c=raw_high_c, raw_high_f=raw_high_f,
+            bias_corrected_c=corrected_c, bias_corrected_f=corrected_f,
+            weight=weight,
+        )
+        await tracker.store_forecast(
+            station, target_date, "noaa_mos",
+            raw_high_c, raw_high_f, corrected_c, corrected_f,
+        )
+        return forecast
+
+    except Exception as e:
+        logger.error("NOAA MOS error for %s: %s", station, e)
+        return None
+
+
+def _parse_mos_max_temp(text: str) -> Optional[float]:
+    """Extract MAX temperature from MOS text output."""
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("X/N") or stripped.startswith("N/X"):
+            # Format: X/N or N/X followed by values
+            parts = stripped.split()
+            for part in parts[1:]:
+                try:
+                    val = int(part)
+                    if -40 <= val <= 130:  # Reasonable F range
+                        return float(val)
+                except ValueError:
+                    continue
     return None
 
 
