@@ -11,9 +11,11 @@ import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Dict, List, Optional, Tuple
+import math
 
 import aiohttp
 from dateutil import parser as dateparser
+import yaml
 
 logger = logging.getLogger("markets")
 
@@ -117,108 +119,193 @@ class MarketGroup:
 
 
 # ---------------------------------------------------------------------------
-# Build event slugs for known stations and dates
+# Geocoding and Auto-Discovery
 # ---------------------------------------------------------------------------
-def _build_event_slugs(station_ids: List[str], target_dates: List[date]
-                        ) -> List[Tuple[str, str, date]]:
-    """
-    Build Gamma API event slugs for each station/date combo.
-    Returns: [(slug, station, target_date), ...]
-    """
-    slugs = []
-    for station in station_ids:
-        slug_city = CITY_SLUG_NAMES.get(station)
-        if not slug_city:
-            continue
-        for d in target_dates:
-            month_name = MONTH_NAMES.get(d.month, "")
-            slug = f"highest-temperature-in-{slug_city}-on-{month_name}-{d.day}-{d.year}"
-            slugs.append((slug, station, d))
-    return slugs
+def _haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    R = 6371
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lon2 - lon1)
+    a = math.sin(dphi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(dlambda/2)**2
+    return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1-a))
 
+async def _geocode_city(city: str) -> Optional[dict]:
+    """Use Open-Meteo to find lat/lon/timezone for a city."""
+    url = f"https://geocoding-api.open-meteo.com/v1/search?name={city}&count=1"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=10) as resp:
+                if resp.status != 200:
+                    return None
+                data = await resp.json()
+                if data.get("results"):
+                    res = data["results"][0]
+                    return {
+                        "lat": res["latitude"],
+                        "lon": res["longitude"],
+                        "timezone": res.get("timezone", "UTC"),
+                        "country": res.get("country_code", "US"),
+                    }
+    except Exception as e:
+        logger.error("Geocoding error for %s: %s", city, e)
+    return None
+
+async def _find_closest_icao(lat: float, lon: float) -> Optional[str]:
+    """Find closest ICAO airport via AviationWeather."""
+    bbox = f"{lon-2},{lat-2},{lon+2},{lat+2}"
+    url = f"https://aviationweather.gov/api/data/stationinfo?format=json&bbox={bbox}"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=10) as resp:
+                if resp.status != 200:
+                    return None
+                data = await resp.json()
+                closest, min_dist = None, 999999
+                for st in data:
+                    slat, slon, sid = st.get("lat"), st.get("lon"), st.get("icaoId")
+                    if sid and slat is not None and slon is not None:
+                        dist = _haversine(lat, lon, float(slat), float(slon))
+                        if dist < min_dist:
+                            min_dist = dist
+                            closest = sid
+                return closest
+    except Exception as e:
+        logger.error("ICAO lookup error: %s", e)
+    return None
+
+async def _auto_add_station_to_config(city: str) -> str:
+    """Geocode, find ICAO, and append to config.yaml."""
+    geo = await _geocode_city(city)
+    if not geo: return "UNKNOWN"
+    icao = await _find_closest_icao(geo["lat"], geo["lon"])
+    if not icao: return "UNKNOWN"
+    
+    # Check if already mapped in dicts
+    if city.lower() in CITY_TO_STATION: return CITY_TO_STATION[city.lower()]
+    
+    # Read config.yaml
+    cfg_path = os.path.join(os.path.dirname(__file__), "config.yaml") if "USER_AGENT" in globals() else "config.yaml"
+    try:
+        if os.path.exists("config.yaml"):
+            cfg_path = "config.yaml"
+        with open(cfg_path, "r") as f:
+            full_cfg = yaml.safe_load(f)
+        
+        stations = full_cfg.get("stations", {})
+        if icao in stations: return icao
+        
+        # Determine defaults
+        unit = "F" if geo["country"] == "US" else "C"
+        models = ["gfs", "ecmwf", "icon", "nws", "noaa"] if geo["country"] == "US" else ["ecmwf", "gfs", "icon"]
+        biases = {"gfs": 0.0, "ecmwf": 0.0, "icon": 0.0, "nws": 0.0, "noaa": 0.0} if geo["country"] == "US" else {"ecmwf": 0.0, "gfs": 0.0, "icon": 0.0}
+
+        stations[icao] = {
+            "city": city,
+            "country": geo["country"],
+            "lat": geo["lat"],
+            "lon": geo["lon"],
+            "timezone": geo["timezone"],
+            "unit": unit,
+            "wunderground_url": "",
+            "is_coastal": False,
+            "starting_bias": biases,
+            "models": models
+        }
+        
+        with open(cfg_path, "w") as f:
+            yaml.dump(full_cfg, f, default_flow_style=False, sort_keys=False)
+            
+        CITY_TO_STATION[city.lower()] = icao
+        STATION_CITY_NAMES[icao] = city
+        logger.info("Auto-discovered and added %s (%s) to config.", city, icao)
+        
+        # Send alert
+        from alerts import send_new_city_alert
+        import asyncio
+        asyncio.create_task(send_new_city_alert(city, f"Discovered and mapped to airport: {icao}"))
+        return icao
+    except Exception as e:
+        logger.error("Error auto-adding %s to config: %s", city, e)
+        return "UNKNOWN"
 
 # ---------------------------------------------------------------------------
-# Fetch active weather markets — slug-based lookup
+# Fetch active weather markets — Auto-discovery
 # ---------------------------------------------------------------------------
 async def fetch_active_weather_markets(known_stations: List[str] = None
                                         ) -> Dict[str, MarketGroup]:
     """
-    Fetch daily temperature events by constructing slugs directly.
-    Polymarket uses: "highest-temperature-in-{city}-on-{month}-{day}-{year}"
+    Fetch all events dynamically and discover temperature markets.
     Returns: {station_date_key: MarketGroup}
     """
-    from datetime import timedelta
-    today = date.today()
-    tomorrow = today + timedelta(days=1)
-    target_dates = [today, tomorrow]
-
-    stations = known_stations or list(CITY_SLUG_NAMES.keys())
-    slugs = _build_event_slugs(stations, target_dates)
-
+    import os
     results: Dict[str, MarketGroup] = {}
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            for offset in range(0, 1000, 100):
+                url = f"{GAMMA_API_URL}?tag=weather&active=true&closed=false&limit=100&offset={offset}"
+                try:
+                    async with session.get(
+                        url, headers={"User-Agent": USER_AGENT}, timeout=aiohttp.ClientTimeout(total=20)
+                    ) as resp:
+                        if resp.status != 200:
+                            break
+                        events = await resp.json()
+                        if not events:
+                            break
+                        
+                        found_any_temperature = False
+                        for event in events:
+                            title = event.get("title", "").lower()
+                            if "highest temperature" in title:
+                                found_any_temperature = True
+                                group = await _parse_event_async(event)
+                                if group and group.bins and group.station != "UNKNOWN":
+                                    key = f"{group.station}_{group.target_date.isoformat()}"
+                                    results[key] = group
+                                    logger.info(
+                                        "Found market: %s %s — %d bins",
+                                        group.station, group.target_date, len(group.bins),
+                                    )
+                        
+                        # Optimization: if we found weather events but none of them are temperature,
+                        # and we have enough, we could break. But we will just loop for safety.
+                except Exception as loop_e:
+                    logger.warning("Gamma chunk fetch timeout for offset %d", offset)
+                    continue
 
-    async with aiohttp.ClientSession() as session:
-        for slug, station, target_date in slugs:
-            try:
-                url = f"{GAMMA_EVENT_SLUG_URL}/{slug}"
-                async with session.get(
-                    url,
-                    headers={"User-Agent": USER_AGENT},
-                    timeout=aiohttp.ClientTimeout(total=10),
-                ) as resp:
-                    if resp.status == 404:
-                        # Market not created yet for this date
-                        continue
-                    if resp.status != 200:
-                        logger.warning("Gamma slug fetch HTTP %d for %s", resp.status, slug)
-                        continue
-                    event = await resp.json()
-            except Exception as e:
-                logger.error("Gamma slug fetch error for %s: %s", slug, e)
-                continue
+    except Exception as e:
+        import traceback
+        logger.error("Gamma dynamic fetch error: %s\n%s", e, traceback.format_exc())
 
-            try:
-                group = _parse_event(event, station)
-                if group and group.bins:
-                    key = f"{station}_{target_date.isoformat()}"
-                    results[key] = group
-                    logger.info(
-                        "Found market: %s %s — %d bins",
-                        station, target_date, len(group.bins),
-                    )
-            except Exception as e:
-                logger.error("Event parse error for %s: %s", slug, e)
-
-    logger.info("Markets fetched: %d events across %d stations",
-                len(results), len(stations))
     return results
 
 
-# ---------------------------------------------------------------------------
-# Event parsing
 # ---------------------------------------------------------------------------
 def is_valid_price(price: float, liquidity: float = 0.0) -> bool:
     """Return True if price >= 0.01 and liquidity >= $5.00."""
     return price >= 0.01 and liquidity >= 5.0
 
-def _parse_event(event: dict, station: str = None) -> Optional[MarketGroup]:
-    """Parse a Gamma API event into a MarketGroup."""
+async def _parse_event_async(event: dict, station: str = None) -> Optional[MarketGroup]:
+    """Parse a Gamma API event into a MarketGroup and natively auto-discover cities."""
     title = event.get("title", "")
     if not title:
         return None
 
     # Extract city and date from title
     city, target_date = _parse_title(title)
-    if not target_date:
+    if not target_date or not city:
         return None
 
     # Use provided station or map from city
     if not station:
-        station = map_city_to_station(city) if city else "UNKNOWN"
+        station = CITY_TO_STATION.get(city.lower())
+        if not station:
+            # Auto-discover logic
+            station = await _auto_add_station_to_config(city)
 
     # Use known city name if station provided
-    if not city:
-        city = STATION_CITY_NAMES.get(station, "Unknown")
+    friendly_city = STATION_CITY_NAMES.get(station, city.title())
 
     # Parse resolution source from description
     description = event.get("description", "")
@@ -232,7 +319,7 @@ def _parse_event(event: dict, station: str = None) -> Optional[MarketGroup]:
 
     group = MarketGroup(
         station=station,
-        city=city,
+        city=friendly_city,
         target_date=target_date,
         event_id=str(event.get("id", "")),
         resolution_source=resolution_source,

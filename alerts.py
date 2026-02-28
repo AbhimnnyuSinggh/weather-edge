@@ -75,7 +75,9 @@ async def send_trade_alert(alert: AlertReady, wallet_state):
         await send_combo_alert(alert, wallet_state)
         return
 
-    if alert.trade_type == "lockin_yes":
+    if getattr(alert, "is_cancelled", False):
+        msg = _format_cancelled(alert)
+    elif alert.trade_type == "lockin_yes":
         msg = _format_lockin(alert, balance)
     elif alert.trade_type == "no_tail":
         msg = _format_no_tail(alert, balance)
@@ -116,8 +118,29 @@ def _format_kelly(a: AlertReady, balance: float) -> str:
     return f"Suggested size: ${suggested_size:.2f} ({suggested_pct:.1f}% of ${balance:.0f}) | Max risk today: ${max_risk:.2f}"
 
 
+def _build_update_banner(a: AlertReady) -> str:
+    if not getattr(a, "is_update", False):
+        return ""
+    old_edge_pct = int(getattr(a, "old_edge", 0) * 100)
+    new_edge_pct = int(max(0, a.win_probability - a.entry_price) * 100)
+    return (
+        f"⏰ UPDATE: \"{a.bin_label}\" now at {a.entry_price*100:.0f}¢ (was {getattr(a, 'old_entry_price', 0)*100:.0f}¢)\n"
+        f"   Edge: {old_edge_pct}% → {new_edge_pct}% — still profitable\n"
+    )
+
+def _format_cancelled(a: AlertReady) -> str:
+    edge_was = int(getattr(a, "old_edge", 0) * 100)
+    return (
+        f"❌ CANCELLED: {a.city} {a.station} ({a.target_date})\n"
+        f"Score: {a.confidence_score}/100 | {_ist_time()}\n\n"
+        f"⛔ \"{a.bin_label}\" now at {a.entry_price*100:.0f}¢ (was {getattr(a, 'old_entry_price', 0)*100:.0f}¢)\n"
+        f"   Edge gone (was {edge_was}%) — Do not trade.\n"
+        f"   Market: {a.polymarket_url}"
+    )
+
+
 def _format_lockin(a: AlertReady, balance: float) -> str:
-    update_str = f"🔄 Prices updated {a.update_minutes_ago} mins ago\n" if a.is_update else ""
+    update_str = _build_update_banner(a)
     kelly_str = _format_kelly(a, balance)
     return (
         f"🔒 LOCK-IN: {a.city} {a.station} ({a.target_date})\n"
@@ -137,7 +160,7 @@ def _format_lockin(a: AlertReady, balance: float) -> str:
 
 def _format_no_tail(a: AlertReady, balance: float) -> str:
     yes_price = 1.0 - a.entry_price
-    update_str = f"🔄 Prices updated {a.update_minutes_ago} mins ago\n" if a.is_update else ""
+    update_str = _build_update_banner(a)
     kelly_str = _format_kelly(a, balance)
     return (
         f"🚫 NO TAIL: {a.city} {a.station} ({a.target_date})\n"
@@ -156,7 +179,7 @@ def _format_no_tail(a: AlertReady, balance: float) -> str:
 
 
 def _format_forecast(a: AlertReady, balance: float) -> str:
-    update_str = f"🔄 Prices updated {a.update_minutes_ago} mins ago\n" if a.is_update else ""
+    update_str = _build_update_banner(a)
     kelly_str = _format_kelly(a, balance)
     return (
         f"📊 FORECAST: {a.city} {a.station} ({a.target_date})\n"
@@ -183,7 +206,7 @@ def _format_ladder(a: AlertReady, balance: float) -> str:
         else:
             bin_lines += f"  • BUY YES \"{b['label']}\" at {b['yes_price']*100:.0f}¢\n"
 
-    update_str = f"🔄 Prices updated {a.update_minutes_ago} mins ago\n" if a.is_update else ""
+    update_str = _build_update_banner(a)
     kelly_str = _format_kelly(a, balance)
     return (
         f"🪜 LADDER: {a.city} {a.station} ({a.target_date})\n"
@@ -202,7 +225,7 @@ def _format_ladder(a: AlertReady, balance: float) -> str:
 
 def _format_edge_no(a: AlertReady, balance: float) -> str:
     yes_price = 1.0 - a.entry_price
-    update_str = f"🔄 Prices updated {a.update_minutes_ago} mins ago\n" if a.is_update else ""
+    update_str = _build_update_banner(a)
     kelly_str = _format_kelly(a, balance)
     return (
         f"📊 FORECAST (NO_PLAY): {a.city} {a.station} ({a.target_date})\n"

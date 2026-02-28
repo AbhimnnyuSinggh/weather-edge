@@ -132,7 +132,13 @@ async def fetch_all_stations(stations_cfg: dict) -> Dict[str, Dict[str, ModelFor
             if wb_result:
                 results[icao]["weatherbit"] = wb_result
 
-        # 6) NOAA MOS (US stations only)
+        # 6) Visual Crossing (1000/day free)
+        if _rate_limit_status.get("visualcrossing") != "limited":
+            vc_result = await _fetch_visualcrossing(icao, lat, lon, cfg)
+            if vc_result:
+                results[icao]["visualcrossing"] = vc_result
+
+        # 7) NOAA MOS (US stations only)
         if cfg.get("country") == "US":
             mos_result = await _fetch_noaa_mos(icao, cfg)
             if mos_result:
@@ -576,6 +582,72 @@ async def _fetch_openweather(station: str, lat: float, lon: float,
 
     except Exception as e:
         logger.error("OpenWeather error for %s: %s", station, e)
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Visual Crossing fetch (1000 free/day)
+# ---------------------------------------------------------------------------
+async def _fetch_visualcrossing(station: str, lat: float, lon: float,
+                                 station_cfg: dict) -> Optional[ModelForecast]:
+    """Fetch from Visual Crossing Timeline API."""
+    api_key = os.environ.get("VISUALCROSSING_API_KEY")
+    if not api_key:
+        _rate_limit_status["visualcrossing"] = "no_key"
+        return None
+
+    try:
+        url = f"https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline/{lat},{lon}?unitGroup=metric&include=days&key={api_key}"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                url, headers={"User-Agent": USER_AGENT}, timeout=aiohttp.ClientTimeout(total=10)
+            ) as resp:
+                if resp.status == 429:
+                    _rate_limit_status["visualcrossing"] = "limited"
+                    logger.warning("Visual Crossing rate limit reached")
+                    return None
+                if resp.status != 200:
+                    logger.warning("Visual Crossing HTTP %d for %s", resp.status, station)
+                    return None
+                data = await resp.json()
+
+        _rate_limit_status["visualcrossing"] = "ok"
+
+        days = data.get("days", [])
+        if len(days) < 2:
+            return None
+
+        # Tomorrow's forecast
+        day = days[1]
+        raw_high_c = float(day.get("tempmax", 0))
+        raw_high_f = raw_high_c * 9.0 / 5.0 + 32.0
+
+        date_str = day.get("datetime", "")
+        try:
+            target_date = date.fromisoformat(date_str)
+        except ValueError:
+            target_date = date.today() + timedelta(days=1)
+
+        bias_c = await _get_bias(station, "visualcrossing", station_cfg)
+        corrected_c = raw_high_c - bias_c
+        corrected_f = corrected_c * 9.0 / 5.0 + 32.0
+        weight = await _get_weight(station, "visualcrossing")
+
+        forecast = ModelForecast(
+            station=station, model_name="visualcrossing",
+            target_date=target_date,
+            raw_high_c=raw_high_c, raw_high_f=raw_high_f,
+            bias_corrected_c=corrected_c, bias_corrected_f=corrected_f,
+            weight=weight,
+        )
+        await tracker.store_forecast(
+            station, target_date, "visualcrossing",
+            raw_high_c, raw_high_f, corrected_c, corrected_f,
+        )
+        return forecast
+
+    except Exception as e:
+        logger.error("Visual Crossing error for %s: %s", station, e)
         return None
 
 

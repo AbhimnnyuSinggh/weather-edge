@@ -293,7 +293,8 @@ async def main_loop(config: dict):
                     
                     # Clean expired dedup entries (Keep in cache for 60 mins)
                     expired = [k for k, v in _recent_alerts.items()
-                               if (now - v).total_seconds() > 60 * 60]
+                               if isinstance(v, dict) and (now - v["time"]).total_seconds() > 60 * 60
+                               or not isinstance(v, dict)]
                     for k in expired:
                         del _recent_alerts[k]
 
@@ -312,7 +313,8 @@ async def main_loop(config: dict):
 
                         is_new_alert = True
                         if dedup_key in _recent_alerts:
-                            mins_ago = (now - _recent_alerts[dedup_key]).total_seconds() / 60.0
+                            last_data = _recent_alerts[dedup_key]
+                            mins_ago = (now - last_data["time"]).total_seconds() / 60.0
                             if mins_ago < alert_interval:
                                 logger.info("Skipping fresh un-taken alert (waiting %d min): %s", alert_interval, alert.bin_label)
                                 continue
@@ -320,6 +322,8 @@ async def main_loop(config: dict):
                             # It's an update!
                             alert.is_update = True
                             alert.update_minutes_ago = int(mins_ago)
+                            alert.old_entry_price = last_data["price"]
+                            alert.old_edge = last_data["edge"]
                             is_new_alert = False
 
                         # Enforce daily alert limit for new alerts
@@ -329,15 +333,59 @@ async def main_loop(config: dict):
                                 continue
 
                         try:
+                            # Send standard alert
                             await alerts.send_trade_alert(alert, wallet_state)
-                            _recent_alerts[dedup_key] = now
+                            _recent_alerts[dedup_key] = {
+                                "time": now,
+                                "price": alert.entry_price,
+                                "edge": (alert.win_probability - alert.entry_price),
+                                "station": alert.station,
+                                "target_date": alert.target_date,
+                                "bin_label": alert.bin_label,
+                                "side": alert.side,
+                                "market_id": alert.market_id,
+                                "trade_type": alert.trade_type
+                            }
                             if is_new_alert:
                                 await tracker.increment_today_alert_count()
-                            await allocator.reserve_capital(
-                                alert.sized_cost, alert.alert_id
-                            )
+                            await allocator.reserve_capital(alert.sized_cost, alert.alert_id)
                         except Exception as e:
                             logger.error("Alert send error: %s", e)
+                            
+                    # Check for cancelled edges
+                    current_alert_keys = {
+                        hashlib.md5(f"{a.station}_{a.target_date}_{a.trade_type}_{a.bin_label}".encode()).hexdigest()
+                        for a in ranked_alerts
+                    }
+                    
+                    for k, v in list(_recent_alerts.items()):
+                        if k not in current_alert_keys:
+                            # Was in recent alerts, but no longer edge! Check if user took it.
+                            if wallet_state.has_user_taken_trade(v["station"], v["target_date"], v["bin_label"]):
+                                del _recent_alerts[k]
+                                continue
+                            
+                            # Edge is gone, find current price in markets
+                            m_key = f"{v['station']}_{v['target_date'].isoformat() if isinstance(v['target_date'], date) else v['target_date']}"
+                            m_group = all_markets.get(m_key)
+                            if m_group:
+                                current_price = 0
+                                for b in m_group.bins:
+                                    blabel = b.bin.label if hasattr(b.bin, "label") else b.bin.get("label", "")
+                                    if blabel == v["bin_label"]:
+                                        current_price = b.yes_price if v["side"] == "YES" else (1.0 - b.yes_price)
+                                        break
+                                
+                                # Send cancellation alert
+                                if current_price > 0:
+                                    cancel_alert = getattr(allocator, "AlertReady")(
+                                        trade_type=v["trade_type"], station=v["station"], city="", target_date=v["target_date"],
+                                        side=v["side"], bin_label=v["bin_label"], entry_price=current_price,
+                                        is_update=True, update_minutes_ago=int((now - v["time"]).total_seconds() / 60.0),
+                                        old_entry_price=v["price"], old_edge=v["edge"], is_cancelled=True
+                                    )
+                                    await alerts.send_trade_alert(cancel_alert, wallet_state)
+                            del _recent_alerts[k]
                 elif scheduler.is_end_of_trading_day(stations_cfg):
                     best_ev = max(
                         (s.ev for s in raw_signals), default=0
