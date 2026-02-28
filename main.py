@@ -69,7 +69,7 @@ async def setup_telegram(config: dict) -> Application:
     await app.initialize()
     await app.start()
     # Wait for old instance to release the polling lock during redeploys
-    await asyncio.sleep(5)
+    await asyncio.sleep(15)
     # Start polling in background (non-blocking)
     await app.updater.start_polling(
         drop_pending_updates=True,
