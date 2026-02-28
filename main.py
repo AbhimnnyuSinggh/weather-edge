@@ -82,7 +82,7 @@ async def setup_telegram(config: dict) -> Application:
         """Continuously check if polling died from 409 Conflict and restart it."""
         while True:
             try:
-                if not app_instance.updater.is_running:
+                if not app_instance.updater.running:
                     logger.warning("Telegram polling is not running (likely due to 409 Conflict). Starting...")
                     await app_instance.updater.start_polling(
                         drop_pending_updates=True,
