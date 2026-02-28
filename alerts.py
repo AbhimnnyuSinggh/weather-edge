@@ -14,6 +14,7 @@ import pytz
 from telegram import Bot
 from telegram.constants import ParseMode
 
+import models
 import tracker
 from allocator import AlertReady
 
@@ -82,6 +83,12 @@ async def send_trade_alert(alert: AlertReady, wallet_state):
         msg = _format_forecast(alert, balance)
     elif alert.trade_type == "ladder":
         msg = _format_ladder(alert, balance)
+    elif alert.trade_type == "edge_yes":
+        msg = _format_edge_yes(alert, balance)
+    elif alert.trade_type == "edge_no":
+        msg = _format_edge_no(alert, balance)
+    elif alert.trade_type == "edge_ladder":
+        msg = _format_edge_ladder(alert, balance)
     else:
         msg = f"📊 Signal: {alert.trade_type} {alert.station} {alert.bin_label}"
 
@@ -146,7 +153,8 @@ def _format_forecast(a: AlertReady, balance: float) -> str:
         f"Score: {a.confidence_score}/100 | {_ist_time()}\n\n"
         f"🌡️ Models:\n"
         f"{a.model_summary}\n"
-        f"{a.metar_summary}\n\n"
+        f"{a.metar_summary}\n"
+        f"API Status: {_get_sources_string()}\n\n"
         f"✅ BUY YES: \"{a.bin_label}\" at {a.entry_price*100:.0f}¢\n"
         f"   Shares: {a.sized_shares:.0f} | Cost: ${a.sized_cost:.2f} | "
         f"Profit if win: ${a.sized_profit_if_win:.2f}\n"
@@ -165,13 +173,77 @@ def _format_ladder(a: AlertReady, balance: float) -> str:
         f"🪜 LADDER: {a.city} {a.station} ({a.target_date})\n"
         f"Score: {a.confidence_score}/100 | {_ist_time()}\n\n"
         f"🌡️ Models disagree:\n"
-        f"{a.model_summary}\n\n"
+        f"{a.model_summary}\n"
+        f"API Status: {_get_sources_string()}\n\n"
         f"━━ BUY ALL {len(a.bins)} BINS ━━\n"
         f"{bin_lines}\n"
         f"Total: ${a.sized_cost:.2f} across {len(a.bins)} bins\n"
         f"Range probability: {a.win_probability*100:.0f}% | EV: +${a.sized_ev:.2f}\n\n"
         f"💰 Wallet: ${balance:.2f} | After trades: ${a.available_after:.2f}"
     )
+
+
+def _format_edge_yes(a: AlertReady, balance: float) -> str:
+    return (
+        f"📈 EDGE YES: {a.city} {a.station} ({a.target_date})\n"
+        f"Score: {a.confidence_score}/100 | {_ist_time()}\n\n"
+        f"{a.model_summary}\n"
+        f"API Status: {_get_sources_string()}\n\n"
+        f"✅ BUY YES: \"{a.bin_label}\" at {a.entry_price*100:.0f}¢\n"
+        f"   Shares: {a.sized_shares:.0f} | Cost: ${a.sized_cost:.2f} | "
+        f"Profit if win: ${a.sized_profit_if_win:.2f}\n"
+        f"   Win prob: {a.win_probability*100:.0f}% | EV: +${a.sized_ev:.2f}\n"
+        f"   Market: {a.polymarket_url}\n\n"
+        f"💰 Wallet: ${balance:.2f} | After trade: ${a.available_after:.2f}"
+    )
+
+
+def _format_edge_no(a: AlertReady, balance: float) -> str:
+    yes_price = 1.0 - a.entry_price
+    return (
+        f"📉 EDGE NO: {a.city} {a.station} ({a.target_date})\n"
+        f"Score: {a.confidence_score}/100 | {_ist_time()}\n\n"
+        f"{a.model_summary}\n"
+        f"API Status: {_get_sources_string()}\n\n"
+        f"🛡️ BUY NO: \"{a.bin_label}\" (YES at {yes_price*100:.0f}¢, NO costs {a.entry_price*100:.0f}¢)\n"
+        f"   Shares: {a.sized_shares:.0f} | Cost: ${a.sized_cost:.2f} | "
+        f"Profit if win: ${a.sized_profit_if_win:.2f}\n"
+        f"   Win prob: {a.win_probability*100:.0f}% | EV: +${a.sized_ev:.2f}\n"
+        f"   Market: {a.polymarket_url}\n\n"
+        f"💰 Wallet: ${balance:.2f} | After trade: ${a.available_after:.2f}"
+    )
+
+
+def _format_edge_ladder(a: AlertReady, balance: float) -> str:
+    bin_lines = ""
+    for b in a.bins:
+        url = b.get("polymarket_url", "")
+        if url:
+            bin_lines += f"  • {b['label']}: [{b['yes_price']*100:.0f}¢]({url})\n"
+        else:
+            bin_lines += f"  • {b['label']}: {b['yes_price']*100:.0f}¢\n"
+
+    return (
+        f"🪜 EDGE LADDER: {a.city} {a.station} ({a.target_date})\n"
+        f"Score: {a.confidence_score}/100 | {_ist_time()}\n\n"
+        f"{a.model_summary}\n"
+        f"API Status: {_get_sources_string()}\n\n"
+        f"━━ BUY ALL {len(a.bins)} BINS ━━\n"
+        f"{bin_lines}\n"
+        f"Total: ${a.sized_cost:.2f} across {len(a.bins)} bins\n"
+        f"Range probability: {a.win_probability*100:.0f}% | EV: +${a.sized_ev:.2f}\n\n"
+        f"💰 Wallet: ${balance:.2f} | After trades: ${a.available_after:.2f}"
+    )
+
+
+def _get_sources_string() -> str:
+    rates = models.get_rate_limit_status()
+    if not rates:
+        return "OK"
+    limited = [k for k, v in rates.items() if v == "limited"]
+    if limited:
+        return f"OK (Limited: {', '.join(limited)})"
+    return "OK (All active)"
 
 
 # ---------------------------------------------------------------------------

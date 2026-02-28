@@ -156,12 +156,22 @@ def _scan_edges(station: str, city: str, target_date_val: date,
     Scan all bins for YES/NO mispricing using distribution probabilities.
     Discovers: edge_yes, edge_no, and edge_ladder signals.
     """
-    from distribution import build_bin_distribution
+    from distribution import build_bin_distribution, format_distribution_text
 
     # Build probability distribution
     dist = build_bin_distribution(models_data, bins, unit)
     if not dist:
         return []
+
+    # Map bin labels to prices for the formatted text
+    bin_prices = {}
+    for mbin in bins:
+        b = mbin.bin if hasattr(mbin, "bin") else mbin
+        label = b.label if hasattr(b, "label") else b.get("label", "")
+        yes_price = mbin.yes_price if hasattr(mbin, "yes_price") else mbin.get("yes_price", 0)
+        bin_prices[label] = yes_price
+
+    dist_text = format_distribution_text(dist, bin_prices, unit)
 
     signals = []
     edge_bins = []  # For ladder detection
@@ -176,6 +186,7 @@ def _scan_edges(station: str, city: str, target_date_val: date,
         model_prob = dist.get(label, 0)
         no_price = 1.0 - yes_price
 
+        # Threshold to avoid floating point issues and ensure edge is real
         yes_edge = model_prob - yes_price
         no_edge = (1.0 - model_prob) - no_price
 
@@ -198,7 +209,7 @@ def _scan_edges(station: str, city: str, target_date_val: date,
                 loss_if_lose=round(10 * yes_price, 2),
                 market_id=market_id,
                 polymarket_url=poly_url,
-                model_summary=f"Dist: {model_prob*100:.0f}% vs Mkt: {yes_price*100:.0f}¢ (edge +{yes_edge*100:.0f}%)",
+                model_summary=dist_text,
             ))
 
         # --- NO edge signal ---
@@ -221,7 +232,7 @@ def _scan_edges(station: str, city: str, target_date_val: date,
                 loss_if_lose=round(10 * no_price, 2),
                 market_id=market_id,
                 polymarket_url=poly_url,
-                model_summary=f"Dist: {no_prob*100:.0f}% NO vs Mkt: {no_price*100:.0f}¢ (edge +{no_edge*100:.0f}%)",
+                model_summary=dist_text,
             ))
 
         # Track bins with YES edge for ladder detection
@@ -241,11 +252,6 @@ def _scan_edges(station: str, city: str, target_date_val: date,
         if total_prob > total_cost * 1.5:  # Favorable cost ratio
             confidence = min(85, int(avg_edge * 200) + len(edge_bins) * 5)
 
-            model_lines = " | ".join(
-                f"{b['label']}: {b['model_prob']*100:.0f}% vs {b['yes_price']*100:.0f}¢"
-                for b in edge_bins
-            )
-
             signals.append(Signal(
                 trade_type="edge_ladder",
                 station=station, city=city,
@@ -263,7 +269,7 @@ def _scan_edges(station: str, city: str, target_date_val: date,
                 win_probability=round(total_prob, 3),
                 profit_if_win=round(10 * (1.0 - total_cost / max(1, len(edge_bins))), 2),
                 loss_if_lose=round(10 * total_cost / max(1, len(edge_bins)), 2),
-                model_summary=model_lines,
+                model_summary=dist_text,
             ))
 
     return signals
