@@ -78,28 +78,23 @@ async def setup_telegram(config: dict) -> Application:
 
     await app.start()
     
-    # Start polling in background (non-blocking) with conflict handling
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            await app.updater.start_polling(
-                drop_pending_updates=True,
-                allowed_updates=["message"],
-            )
-            logger.info("Telegram bot started polling successfully.")
-            break
-        except telegram.error.Conflict as e:
-            logger.warning("Telegram Conflict (Attempt %d/%d) - Old instance still running? %s", attempt+1, max_retries, e)
-            if attempt < max_retries - 1:
-                logger.info("Sleeping 15 seconds before retry...")
-                await asyncio.sleep(15)
-            else:
-                logger.error("Failed to start polling after %d attempts due to Conflict.", max_retries)
-                raise
-        except Exception as e:
-            logger.error("Unexpected error starting Telegram polling: %s", e)
-            raise
+    async def keepalive_polling(app_instance: Application):
+        """Continuously check if polling died from 409 Conflict and restart it."""
+        while True:
+            try:
+                if not app_instance.updater.is_running:
+                    logger.warning("Telegram polling is not running (likely due to 409 Conflict). Starting...")
+                    await app_instance.updater.start_polling(
+                        drop_pending_updates=True,
+                        allowed_updates=["message"],
+                    )
+            except Exception as e:
+                logger.error("Error in keepalive polling restarter: %s", e)
+            await asyncio.sleep(20)
 
+    # Start the watcher task in the background
+    asyncio.create_task(keepalive_polling(app))
+    
     return app
 
 

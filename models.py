@@ -189,6 +189,11 @@ async def _fetch_open_meteo(station: str, lat: float, lon: float,
         "forecast_days": 2,
     }
 
+    api_key = os.environ.get("OPEN_METEO_API_KEY")
+    fetch_url = "https://customer-api.open-meteo.com/v1/forecast" if api_key else OPEN_METEO_URL
+    if api_key:
+        params["apikey"] = api_key
+
     results: Dict[str, ModelForecast] = {}
     
     max_retries = 3
@@ -196,7 +201,7 @@ async def _fetch_open_meteo(station: str, lat: float, lon: float,
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(
-                    OPEN_METEO_URL, params=params,
+                    fetch_url, params=params,
                     timeout=aiohttp.ClientTimeout(total=15)
                 ) as resp:
                     if resp.status == 429:
@@ -206,7 +211,7 @@ async def _fetch_open_meteo(station: str, lat: float, lon: float,
                             await asyncio.sleep(wait_time)
                             continue
                         else:
-                            logger.error("Open-Meteo HTTP 429: Rate limit exhausted for %s", station)
+                            logger.warning("Open-Meteo HTTP 429: Rate limit exhausted for %s", station)
                             return results
                     if resp.status != 200:
                         logger.error("Open-Meteo HTTP %d for %s", resp.status, station)
@@ -867,6 +872,9 @@ async def _fetch_open_meteo_ensemble(station: str, lat: float, lon: float,
                                       station_cfg: dict) -> Optional[ModelForecast]:
     """Fetch 31-member GFS ensemble from Open-Meteo."""
     try:
+        api_key = os.environ.get("OPEN_METEO_API_KEY")
+        fetch_url = "https://customer-ensemble-api.open-meteo.com/v1/ensemble" if api_key else OPEN_METEO_ENSEMBLE_URL
+
         params = {
             "latitude": lat,
             "longitude": lon,
@@ -874,9 +882,12 @@ async def _fetch_open_meteo_ensemble(station: str, lat: float, lon: float,
             "daily": "temperature_2m_max",
             "timezone": "auto"
         }
+        if api_key:
+            params["apikey"] = api_key
+
         async with aiohttp.ClientSession() as session:
             async with session.get(
-                OPEN_METEO_ENSEMBLE_URL, params=params,
+                fetch_url, params=params,
                 headers={"User-Agent": USER_AGENT},
                 timeout=aiohttp.ClientTimeout(total=15),
             ) as resp:
