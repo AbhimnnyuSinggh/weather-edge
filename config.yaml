@@ -63,6 +63,23 @@ stations:
       noaa: 0.5
     models: ["gfs", "ecmwf", "icon", "nws", "noaa"]
 
+  KATL:
+    city: "Atlanta"
+    country: "US"
+    lat: 33.6407
+    lon: -84.4277
+    timezone: "America/New_York"
+    unit: "F"
+    wunderground_url: "https://www.wunderground.com/history/daily/us/ga/atlanta/KATL"
+    is_coastal: false
+    starting_bias:
+      gfs: 0.5
+      ecmwf: 0.2
+      icon: 0.3
+      nws: 0.0
+      noaa: 0.0
+    models: ["gfs", "ecmwf", "icon", "nws", "noaa"]
+
 # --- Trading Rules ---
 trading:
   min_confidence: 40
