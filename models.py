@@ -17,6 +17,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional
+import ssl
 
 import aiohttp
 
@@ -262,8 +263,12 @@ async def _fetch_open_meteo(station: str, lat: float, lon: float,
 async def _fetch_nws(station: str, lat: float, lon: float,
                       station_cfg: dict) -> Optional[ModelForecast]:
     """Fetch NWS point forecast for US stations."""
+    ssl_context = ssl.create_default_context()
+    ssl_context.check_hostname = False
+    ssl_context.verify_mode = ssl.CERT_NONE
+
     try:
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context)) as session:
             # Step 1: Get forecast URL from points endpoint
             points_url = f"{NWS_POINTS_URL}/{lat},{lon}"
             async with session.get(
@@ -348,8 +353,12 @@ async def _fetch_nws(station: str, lat: float, lon: float,
 async def _fetch_noaa(station: str, lat: float, lon: float,
                        station_cfg: dict) -> Optional[ModelForecast]:
     """Fetch NOAA gridpoints forecast for US stations."""
+    ssl_context = ssl.create_default_context()
+    ssl_context.check_hostname = False
+    ssl_context.verify_mode = ssl.CERT_NONE
+
     try:
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context)) as session:
             # Step 1: Get gridpoint endpoints
             points_url = f"{NWS_POINTS_URL}/{lat},{lon}"
             async with session.get(
