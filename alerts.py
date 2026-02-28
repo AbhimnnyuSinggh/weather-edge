@@ -198,13 +198,17 @@ def _format_forecast(a: AlertReady, balance: float) -> str:
 
 
 def _format_ladder(a: AlertReady, balance: float) -> str:
-    bin_lines = ""
+    bin_lines = "✅ BUY\n"
     for b in a.bins:
         url = b.get("polymarket_url", "")
+        edge_pct = int(max(0, b.get("prob", 0) - b.get("yes_price", 0)) * 100)
+        label = b.get("label", "")
+        price = b.get("yes_price", 0) * 100
+        
         if url:
-            bin_lines += f"  • BUY YES \"{b['label']}\" at {b['yes_price']*100:.0f}¢\n    {url}\n"
+            bin_lines += f"[YES {label} at {price:.0f}¢]({url}) | Edge: +{edge_pct}%\n"
         else:
-            bin_lines += f"  • BUY YES \"{b['label']}\" at {b['yes_price']*100:.0f}¢\n"
+            bin_lines += f"YES {label} at {price:.0f}¢ | Edge: +{edge_pct}%\n"
 
     update_str = _build_update_banner(a)
     kelly_str = _format_kelly(a, balance)

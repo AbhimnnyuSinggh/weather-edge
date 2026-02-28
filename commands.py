@@ -16,8 +16,23 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 import alerts
 import tracker
 import wallet as wallet_mod
+import markets
+import metar as metar_mod
+import models as models_mod
+import yaml
+import os
 
 logger = logging.getLogger("commands")
+
+def _get_config() -> dict:
+    cfg_path = os.path.join(os.path.dirname(__file__), "config.yaml") if "USER_AGENT" not in globals() else "config.yaml"
+    if os.path.exists("config.yaml"):
+        cfg_path = "config.yaml"
+    try:
+        with open(cfg_path, "r") as f:
+            return yaml.safe_load(f) or {}
+    except Exception:
+        return {}
 
 # Pause state
 _paused = False
@@ -322,6 +337,157 @@ async def cmd_resolve(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 # ---------------------------------------------------------------------------
+# /temp — Live Temperature Dashboard
+# ---------------------------------------------------------------------------
+async def cmd_temp(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    /temp — Show live temperature dashboard for all Polymarket cities.
+    Fetches METAR + all 11 models + calculates Bayesian predicted daily high.
+    """
+    await update.message.reply_text("🔄 Scanning all markets and fetching temperatures...")
+
+    config = _get_config()
+    stations_cfg = config.get("stations", {})
+
+    # Step 1: Discover all active markets
+    try:
+        discovered = await markets.discover_temperature_markets()
+        for icao, info in discovered.items():
+            if icao not in stations_cfg:
+                station_info = markets.ICAO_INFO.get(icao)
+                if station_info:
+                    stations_cfg[icao] = station_info
+    except Exception as e:
+        logger.error("Discovery error in /temp: %s", e)
+
+    station_ids = list(stations_cfg.keys())
+
+    # Step 2: Fetch METAR for all stations
+    metar_data = {}
+    try:
+        raw_metar = await metar_mod.fetch_all_stations(station_ids)
+        for icao, m in raw_metar.items():
+            cfg = stations_cfg.get(icao, {})
+            metar_data[icao] = await metar_mod.enrich_metar(
+                m, cfg.get("timezone", "UTC"), cfg.get("unit", "C")
+            )
+    except Exception as e:
+        logger.error("METAR fetch error in /temp: %s", e)
+
+    # Step 3: Fetch model forecasts for all stations
+    try:
+        model_data = await models_mod.fetch_all_stations(stations_cfg)
+    except Exception as e:
+        logger.error("Models fetch error in /temp: %s", e)
+        model_data = {}
+
+    # Step 4: Build output
+    ist = pytz.timezone("Asia/Kolkata")
+    now_ist = datetime.now(ist).strftime("%I:%M %p IST")
+
+    header = (
+        f"🌡️ LIVE TEMPERATURE DASHBOARD | {now_ist}\n\n"
+        f"Models: GFS | ECMWF | ICON | GEM | JMA | TIO | OWM | WBit | NWS | MOS | VC\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    )
+
+    MODEL_ORDER = ["gfs", "ecmwf", "icon", "gem", "jma",
+                   "tomorrow_io", "openweather", "weatherbit",
+                   "nws", "noaa_mos", "visual_crossing"]
+    MODEL_ABBREV = {
+        "gfs": "GFS", "ecmwf": "ECMWF", "icon": "ICON",
+        "gem": "GEM", "jma": "JMA",
+        "tomorrow_io": "TIO", "openweather": "OWM", "weatherbit": "WBit",
+        "nws": "NWS", "noaa_mos": "MOS", "visual_crossing": "VC",
+    }
+
+    lines = []
+    city_num = 0
+
+    for icao, cfg in stations_cfg.items():
+        city_num += 1
+        city = cfg.get("city", icao)
+        unit = cfg.get("unit", "C")
+        station_models = model_data.get(icao, {})
+        station_metar = metar_data.get(icao)
+
+        # Current temp from METAR
+        if station_metar:
+            now_temp = f"{station_metar.temp_c:.0f}°C" if unit == "C" else f"{station_metar.temp_f:.0f}°F"
+            if station_metar.velocity:
+                high_so_far = station_metar.velocity.day_high if unit == "C" else station_metar.velocity.day_high_f
+                high_str = f" | METAR High so far: {high_so_far:.0f}°{unit}"
+            else:
+                high_so_far = None
+                high_str = ""
+        else:
+            now_temp = "—"
+            high_so_far = None
+            high_str = ""
+
+        # Model temps row 1 & 2
+        row1_parts = []
+        row2_parts = []
+        available_count = 0
+
+        for i, model_name in enumerate(MODEL_ORDER):
+            abbrev = MODEL_ABBREV[model_name]
+            forecast = station_models.get(model_name)
+            if forecast:
+                temp = forecast.bias_corrected_c if unit == "C" else forecast.bias_corrected_f
+                temp_str = f"{abbrev}: {temp:.0f}°{unit}"
+                available_count += 1
+            else:
+                temp_str = f"{abbrev}: —"
+
+            if i < 5:
+                row1_parts.append(temp_str)
+            else:
+                row2_parts.append(temp_str)
+
+        row1 = "   " + " | ".join(row1_parts)
+        row2 = "   " + " | ".join(row2_parts)
+
+        # Bayesian predicted daily high
+        predicted_high = 0.0
+        if hasattr(models_mod, "calculate_daily_high_prediction"):
+            predicted_high = await models_mod.calculate_daily_high_prediction(
+                station_models, station_metar,
+                datetime.now(pytz.timezone(cfg["timezone"])).hour,
+                icao, unit
+            )
+
+        # METAR > models warning
+        warning = ""
+        if high_so_far and predicted_high and high_so_far > predicted_high + 1:
+            warning = f"\n   ⚠️ METAR already {high_so_far:.0f}°{unit} > models say {predicted_high:.0f}°{unit} — models may be wrong!"
+
+        city_block = (
+            f"\n{city_num}. {city} ({icao}) — Now: {now_temp}{high_str}\n"
+            f"{row1}\n{row2}\n"
+            f"   ✅ {available_count}/11 models\n"
+            f"   📈 Predicted Daily High: {predicted_high:.1f}°{unit}{warning}"
+        )
+        lines.append(city_block)
+
+    total_cities = city_num
+    footer = (
+        f"\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📊 {total_cities} cities | 11 models | ⏰ {now_ist}"
+    )
+
+    full_msg = header + "\n".join(lines) + footer
+
+    # Telegram has 4096 char limit
+    if len(full_msg) > 4000:
+        chunks = [full_msg[i:i+4000] for i in range(0, len(full_msg), 4000)]
+        for chunk in chunks:
+            await update.message.reply_text(chunk)
+    else:
+        await update.message.reply_text(full_msg)
+
+
+# ---------------------------------------------------------------------------
 # Register handlers
 # ---------------------------------------------------------------------------
 def register_handlers(app: Application):
@@ -338,6 +504,7 @@ def register_handlers(app: Application):
     app.add_handler(CommandHandler("setcapital", cmd_setcapital))
     app.add_handler(CommandHandler("took", cmd_took))
     app.add_handler(CommandHandler("resolve", cmd_resolve))
+    app.add_handler(CommandHandler("temp", cmd_temp))
     logger.info("Telegram command handlers registered")
 
 

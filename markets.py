@@ -119,114 +119,122 @@ class MarketGroup:
 
 
 # ---------------------------------------------------------------------------
-# Geocoding and Auto-Discovery
+# City Mapping and Auto-Discovery
 # ---------------------------------------------------------------------------
-def _haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    R = 6371
-    phi1, phi2 = math.radians(lat1), math.radians(lat2)
-    dphi = math.radians(lat2 - lat1)
-    dlambda = math.radians(lon2 - lon1)
-    a = math.sin(dphi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(dlambda/2)**2
-    return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1-a))
+CITY_ICAO_MAP = {
+    "seoul": "RKSI",
+    "london": "EGLC",
+    "new york": "KLGA",
+    "chicago": "KORD",
+    "miami": "KMIA",
+    "los angeles": "KLAX",
+    "tokyo": "RJTT",
+    "paris": "LFPG",
+    "dubai": "OMDB",
+    "sydney": "YSSY",
+    "hong kong": "VHHH",
+    "singapore": "WSSS",
+    "toronto": "CYYZ",
+    "delhi": "VIDP",
+    "mumbai": "VABB",
+    "sao paulo": "SBGR",
+    "mexico city": "MMMX",
+    "berlin": "EDDB",
+    "rome": "LIRF",
+    "amsterdam": "EHAM",
+    "beijing": "ZBAA",
+    "shanghai": "ZSPD",
+    "bangkok": "VTBS",
+    "jakarta": "WIII",
+    "cairo": "HECA",
+    "johannesburg": "FAOR",
+    "nairobi": "HKJK",
+    "buenos aires": "SABE",
+    "denver": "KDEN",
+    "atlanta": "KATL",
+    "houston": "KIAH",
+    "phoenix": "KPHX",
+    "san francisco": "KSFO",
+    "washington": "KDCA",
+    "boston": "KBOS",
+    "seattle": "KSEA",
+    "dallas": "KDFW",
+}
 
-async def _geocode_city(city: str) -> Optional[dict]:
-    """Use Open-Meteo to find lat/lon/timezone for a city."""
-    url = f"https://geocoding-api.open-meteo.com/v1/search?name={city}&count=1"
+# Reverse lookup: ICAO → city info (lat, lon, timezone, unit)
+ICAO_INFO = {
+    "RKSI": {"city": "Seoul", "lat": 37.4692, "lon": 126.4505, "timezone": "Asia/Seoul", "unit": "C", "country": "KR", "is_coastal": True, "models": ["gfs", "ecmwf", "icon", "gem", "jma"]},
+    "EGLC": {"city": "London", "lat": 51.5053, "lon": 0.0553, "timezone": "Europe/London", "unit": "C", "country": "GB", "is_coastal": False, "models": ["gfs", "ecmwf", "icon", "gem"]},
+    "KLGA": {"city": "New York", "lat": 40.7772, "lon": -73.8726, "timezone": "America/New_York", "unit": "F", "country": "US", "is_coastal": True, "models": ["gfs", "ecmwf", "icon", "gem", "nws", "noaa"]},
+    "KORD": {"city": "Chicago", "lat": 41.9742, "lon": -87.9073, "timezone": "America/Chicago", "unit": "F", "country": "US", "is_coastal": False, "models": ["gfs", "ecmwf", "icon", "gem", "nws", "noaa"]},
+    "KMIA": {"city": "Miami", "lat": 25.7959, "lon": -80.2870, "timezone": "America/New_York", "unit": "F", "country": "US", "is_coastal": True, "models": ["gfs", "ecmwf", "icon", "gem", "nws", "noaa"]},
+    "KLAX": {"city": "Los Angeles", "lat": 33.9425, "lon": -118.4081, "timezone": "America/Los_Angeles", "unit": "F", "country": "US", "is_coastal": True, "models": ["gfs", "ecmwf", "icon", "gem", "nws", "noaa"]},
+    "RJTT": {"city": "Tokyo", "lat": 35.5494, "lon": 139.7798, "timezone": "Asia/Tokyo", "unit": "C", "country": "JP", "is_coastal": True, "models": ["gfs", "ecmwf", "icon", "gem", "jma"]},
+    "LFPG": {"city": "Paris", "lat": 49.0097, "lon": 2.5479, "timezone": "Europe/Paris", "unit": "C", "country": "FR", "is_coastal": False, "models": ["gfs", "ecmwf", "icon", "gem"]},
+    "OMDB": {"city": "Dubai", "lat": 25.2532, "lon": 55.3657, "timezone": "Asia/Dubai", "unit": "C", "country": "AE", "is_coastal": True, "models": ["gfs", "ecmwf", "icon", "gem"]},
+    "KATL": {"city": "Atlanta", "lat": 33.6407, "lon": -84.4277, "timezone": "America/New_York", "unit": "F", "country": "US", "is_coastal": False, "models": ["gfs", "ecmwf", "icon", "gem", "nws", "noaa"]},
+    # Additional generic mappings could be defined here
+}
+
+def _city_to_icao(city_name: str) -> Optional[str]:
+    """Convert city name to ICAO code. Returns None if unknown."""
+    return CITY_ICAO_MAP.get(city_name.lower().strip())
+
+async def discover_temperature_markets() -> Dict[str, dict]:
+    """
+    Scan Polymarket Gamma API for ALL active 'highest temperature' events.
+    Returns dict of discovered stations with lat/lon/timezone/unit.
+    """
+    discovered = {}
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=10) as resp:
+            # Search for temperature events
+            params = {"active": "true", "limit": 100, "order": "startDate"}
+            async with session.get(
+                GAMMA_API_URL, params=params,
+                headers={"User-Agent": USER_AGENT}, timeout=15
+            ) as resp:
                 if resp.status != 200:
-                    return None
-                data = await resp.json()
-                if data.get("results"):
-                    res = data["results"][0]
-                    return {
-                        "lat": res["latitude"],
-                        "lon": res["longitude"],
-                        "timezone": res.get("timezone", "UTC"),
-                        "country": res.get("country_code", "US"),
-                    }
-    except Exception as e:
-        logger.error("Geocoding error for %s: %s", city, e)
-    return None
+                    logger.error("Gamma discovery HTTP %d", resp.status)
+                    return discovered
+                events = await resp.json()
 
-async def _find_closest_icao(lat: float, lon: float) -> Optional[str]:
-    """Find closest ICAO airport via AviationWeather."""
-    bbox = f"{lon-2},{lat-2},{lon+2},{lat+2}"
-    url = f"https://aviationweather.gov/api/data/stationinfo?format=json&bbox={bbox}"
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=10) as resp:
-                if resp.status != 200:
-                    return None
-                data = await resp.json()
-                closest, min_dist = None, 999999
-                for st in data:
-                    slat, slon, sid = st.get("lat"), st.get("lon"), st.get("icaoId")
-                    if sid and slat is not None and slon is not None:
-                        dist = _haversine(lat, lon, float(slat), float(slon))
-                        if dist < min_dist:
-                            min_dist = dist
-                            closest = sid
-                return closest
-    except Exception as e:
-        logger.error("ICAO lookup error: %s", e)
-    return None
+        for event in events:
+            title = event.get("title", "").lower()
+            # Match "highest temperature in {city} on {date}" pattern
+            if "highest temperature" not in title:
+                continue
 
-async def _auto_add_station_to_config(city: str) -> str:
-    """Geocode, find ICAO, and append to config.yaml."""
-    geo = await _geocode_city(city)
-    if not geo: return "UNKNOWN"
-    icao = await _find_closest_icao(geo["lat"], geo["lon"])
-    if not icao: return "UNKNOWN"
-    
-    # Check if already mapped in dicts
-    if city.lower() in CITY_TO_STATION: return CITY_TO_STATION[city.lower()]
-    
-    # Read config.yaml
-    cfg_path = os.path.join(os.path.dirname(__file__), "config.yaml") if "USER_AGENT" in globals() else "config.yaml"
-    try:
-        if os.path.exists("config.yaml"):
-            cfg_path = "config.yaml"
-        with open(cfg_path, "r") as f:
-            full_cfg = yaml.safe_load(f)
-        
-        stations = full_cfg.get("stations", {})
-        if icao in stations: return icao
-        
-        # Determine defaults
-        unit = "F" if geo["country"] == "US" else "C"
-        models = ["gfs", "ecmwf", "icon", "nws", "noaa"] if geo["country"] == "US" else ["ecmwf", "gfs", "icon"]
-        biases = {"gfs": 0.0, "ecmwf": 0.0, "icon": 0.0, "nws": 0.0, "noaa": 0.0} if geo["country"] == "US" else {"ecmwf": 0.0, "gfs": 0.0, "icon": 0.0}
+            slug = event.get("slug", "")
+            event_id = event.get("id", "")
 
-        stations[icao] = {
-            "city": city,
-            "country": geo["country"],
-            "lat": geo["lat"],
-            "lon": geo["lon"],
-            "timezone": geo["timezone"],
-            "unit": unit,
-            "wunderground_url": "",
-            "is_coastal": False,
-            "starting_bias": biases,
-            "models": models
-        }
-        
-        with open(cfg_path, "w") as f:
-            yaml.dump(full_cfg, f, default_flow_style=False, sort_keys=False)
-            
-        CITY_TO_STATION[city.lower()] = icao
-        STATION_CITY_NAMES[icao] = city
-        logger.info("Auto-discovered and added %s (%s) to config.", city, icao)
-        
-        # Send alert
-        from alerts import send_new_city_alert
-        import asyncio
-        asyncio.create_task(send_new_city_alert(city, f"Discovered and mapped to airport: {icao}"))
-        return icao
+            # Extract city name from title
+            match = re.search(r"highest temperature in (.+?) on (.+)", title, re.IGNORECASE)
+            if not match:
+                continue
+
+            city_name = match.group(1).strip()
+            date_str = match.group(2).strip()
+
+            # Map city to ICAO code
+            icao = _city_to_icao(city_name)
+            if not icao:
+                logger.info(f"Discovered unknown city: {city_name} — skipping (add to mapping)")
+                continue
+
+            discovered[icao] = {
+                "city": city_name,
+                "event_id": event_id,
+                "slug": slug,
+                "date_str": date_str,
+            }
+            logger.info(f"🔍 Discovered market: {city_name} ({icao}) — {date_str}")
+
     except Exception as e:
-        logger.error("Error auto-adding %s to config: %s", city, e)
-        return "UNKNOWN"
+        logger.error("Market discovery error: %s", e)
+
+    logger.info(f"📊 Discovered {len(discovered)} temperature markets")
+    return discovered
 
 # ---------------------------------------------------------------------------
 # Fetch active weather markets — Auto-discovery
@@ -297,12 +305,11 @@ async def _parse_event_async(event: dict, station: str = None) -> Optional[Marke
     if not target_date or not city:
         return None
 
-    # Use provided station or map from city
+    # Use known city name if station provided
     if not station:
-        station = CITY_TO_STATION.get(city.lower())
+        station = _city_to_icao(city)
         if not station:
-            # Auto-discover logic
-            station = await _auto_add_station_to_config(city)
+            return None
 
     # Use known city name if station provided
     friendly_city = STATION_CITY_NAMES.get(station, city.title())

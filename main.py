@@ -214,6 +214,21 @@ async def main_loop(config: dict):
                 await asyncio.sleep(interval)
                 continue
 
+            # Step 4.5: Discover newly opened weather markets
+            try:
+                discovered = await markets.discover_temperature_markets()
+                for icao, info in discovered.items():
+                    if icao not in stations_cfg:
+                        station_info = markets.ICAO_INFO.get(icao)
+                        if station_info:
+                            stations_cfg[icao] = station_info
+                            if icao not in station_ids:
+                                station_ids.append(icao)
+                            logger.info(f"Auto-added station: {icao} ({station_info['city']})")
+                            await tracker.init_stations({icao: station_info})
+            except Exception as e:
+                logger.error("Market discovery error: %s", e)
+
             # Step 5: Fetch METAR for all stations
             metar_data = {}
             try:
@@ -320,6 +335,11 @@ async def main_loop(config: dict):
                                 continue
                             
                             # It's an update!
+                            if alert.entry_price == last_data["price"]:
+                                # Price same, track silently
+                                _recent_alerts[dedup_key]["time"] = now
+                                continue
+
                             alert.is_update = True
                             alert.update_minutes_ago = int(mins_ago)
                             alert.old_entry_price = last_data["price"]
@@ -367,7 +387,7 @@ async def main_loop(config: dict):
                             
                             # Edge is gone, find current price in markets
                             m_key = f"{v['station']}_{v['target_date'].isoformat() if isinstance(v['target_date'], date) else v['target_date']}"
-                            m_group = all_markets.get(m_key)
+                            m_group = market_data.get(m_key)
                             if m_group:
                                 current_price = 0
                                 for b in m_group.bins:

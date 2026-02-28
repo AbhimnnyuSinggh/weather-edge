@@ -16,7 +16,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any, Tuple
 import ssl
 
 import aiohttp
@@ -32,14 +32,16 @@ TOMORROW_IO_URL = "https://api.tomorrow.io/v4/weather/forecast"
 OPENWEATHER_URL = "https://api.openweathermap.org/data/3.0/onecall"
 WEATHERBIT_URL = "https://api.weatherbit.io/v2.0/forecast/daily"
 NOAA_MOS_URL = "https://aviationweather.gov/cgi-bin/data/mos.php"
+VISUAL_CROSSING_URL = "https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline"
 USER_AGENT = "WeatherEdgeBot/1.0"
 EWMA_ALPHA = 0.15  # ~90% weight to last 13 data points
 
 # Default MAE per model (°C) — used for distribution calculations
 DEFAULT_MAE = {
-    "gfs": 2.0, "ecmwf": 1.5, "icon": 2.0, "nws": 1.8, "noaa": 1.8,
+    "gfs": 1.8, "ecmwf": 1.5, "icon": 2.0, "gem": 2.2, "jma": 2.0,
+    "nws": 1.5, "noaa_mos": 1.3,
     "tomorrow_io": 2.0, "openweather": 2.2, "weatherbit": 2.5,
-    "noaa_mos": 1.8, "ensemble": 1.0,
+    "visual_crossing": 2.0, "ensemble": 1.0,
 }
 
 # Rate limit tracking (resets per scan cycle)
@@ -98,8 +100,8 @@ async def fetch_all_stations(stations_cfg: dict) -> Dict[str, Dict[str, ModelFor
         model_list = cfg.get("models", ["gfs", "ecmwf", "icon"])
         lat, lon = cfg["lat"], cfg["lon"]
 
-        # 1) Open-Meteo deterministic (GFS, ECMWF, ICON)
-        open_meteo_models = [m for m in model_list if m in ("gfs", "ecmwf", "icon")]
+        # 1) Open-Meteo deterministic (GFS, ECMWF, ICON, GEM, JMA)
+        open_meteo_models = [m for m in model_list if m in ("gfs", "ecmwf", "icon", "gem", "jma")]
         if open_meteo_models:
             om_results = await _fetch_open_meteo(icao, lat, lon, open_meteo_models, cfg)
             results[icao].update(om_results)
@@ -133,10 +135,10 @@ async def fetch_all_stations(stations_cfg: dict) -> Dict[str, Dict[str, ModelFor
                 results[icao]["weatherbit"] = wb_result
 
         # 6) Visual Crossing (1000/day free)
-        if _rate_limit_status.get("visualcrossing") != "limited":
-            vc_result = await _fetch_visualcrossing(icao, lat, lon, cfg)
+        if _rate_limit_status.get("visual_crossing") != "limited":
+            vc_result = await _fetch_visual_crossing(icao, lat, lon, cfg)
             if vc_result:
-                results[icao]["visualcrossing"] = vc_result
+                results[icao]["visual_crossing"] = vc_result
 
         # 7) NOAA MOS (US stations only)
         if cfg.get("country") == "US":
@@ -171,6 +173,8 @@ async def _fetch_open_meteo(station: str, lat: float, lon: float,
         "gfs": "gfs_seamless",
         "ecmwf": "ecmwf_ifs04",
         "icon": "icon_seamless",
+        "gem": "gem_seamless",
+        "jma": "jma_seamless",
     }
     api_models = ",".join(model_map[m] for m in model_list if m in model_map)
 
@@ -588,66 +592,73 @@ async def _fetch_openweather(station: str, lat: float, lon: float,
 # ---------------------------------------------------------------------------
 # Visual Crossing fetch (1000 free/day)
 # ---------------------------------------------------------------------------
-async def _fetch_visualcrossing(station: str, lat: float, lon: float,
-                                 station_cfg: dict) -> Optional[ModelForecast]:
+async def _fetch_visual_crossing(station: str, lat: float, lon: float,
+                                  station_cfg: dict) -> Optional[ModelForecast]:
     """Fetch from Visual Crossing Timeline API."""
-    api_key = os.environ.get("VISUALCROSSING_API_KEY")
+    api_key = os.environ.get("VISUAL_CROSSING_API_KEY")
     if not api_key:
-        _rate_limit_status["visualcrossing"] = "no_key"
+        _rate_limit_status["visual_crossing"] = "no_key"
         return None
 
+    unit_group = "metric" if station_cfg.get("unit", "C") == "C" else "us"
+
     try:
-        url = f"https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline/{lat},{lon}?unitGroup=metric&include=days&key={api_key}"
+        url = f"{VISUAL_CROSSING_URL}/{lat},{lon}/next2days"
+        params = {
+            "unitGroup": unit_group,
+            "key": api_key,
+            "include": "days",
+            "contentType": "json",
+        }
         async with aiohttp.ClientSession() as session:
-            async with session.get(
-                url, headers={"User-Agent": USER_AGENT}, timeout=aiohttp.ClientTimeout(total=10)
-            ) as resp:
+            async with session.get(url, params=params, timeout=15) as resp:
                 if resp.status == 429:
-                    _rate_limit_status["visualcrossing"] = "limited"
-                    logger.warning("Visual Crossing rate limit reached")
+                    _rate_limit_status["visual_crossing"] = "limited"
+                    logger.warning("Visual Crossing rate limit hit")
                     return None
                 if resp.status != 200:
-                    logger.warning("Visual Crossing HTTP %d for %s", resp.status, station)
+                    logger.error("Visual Crossing HTTP %d", resp.status)
                     return None
                 data = await resp.json()
 
-        _rate_limit_status["visualcrossing"] = "ok"
+        _rate_limit_status["visual_crossing"] = "ok"
 
         days = data.get("days", [])
-        if len(days) < 2:
+        if not days:
             return None
 
-        # Tomorrow's forecast
-        day = days[1]
-        raw_high_c = float(day.get("tempmax", 0))
-        raw_high_f = raw_high_c * 9.0 / 5.0 + 32.0
+        # Use today's forecast (index 0) or tomorrow (index 1)
+        # We'll use index 1 for Tomorrow's forecast just like others if possible, but let's stick to the user's logic exactly or close.
+        # Wait, the user's prompt used target_day = days[0]. Let's match their logic exactly.
+        target_day = days[0]
+        raw_high_c = float(target_day.get("tempmax", 0))
+        if unit_group == "us":
+            raw_high_f = raw_high_c
+            raw_high_c = (raw_high_f - 32) * 5 / 9
+        else:
+            raw_high_f = raw_high_c * 9 / 5 + 32
 
-        date_str = day.get("datetime", "")
-        try:
-            target_date = date.fromisoformat(date_str)
-        except ValueError:
-            target_date = date.today() + timedelta(days=1)
-
-        bias_c = await _get_bias(station, "visualcrossing", station_cfg)
+        target_date = date.fromisoformat(target_day["datetime"])
+        bias_c = await _get_bias(station, "visual_crossing", station_cfg)
         corrected_c = raw_high_c - bias_c
-        corrected_f = corrected_c * 9.0 / 5.0 + 32.0
-        weight = await _get_weight(station, "visualcrossing")
+        corrected_f = corrected_c * 9 / 5 + 32
+        weight = await _get_weight(station, "visual_crossing")
 
         forecast = ModelForecast(
-            station=station, model_name="visualcrossing",
+            station=station, model_name="visual_crossing",
             target_date=target_date,
             raw_high_c=raw_high_c, raw_high_f=raw_high_f,
             bias_corrected_c=corrected_c, bias_corrected_f=corrected_f,
             weight=weight,
         )
         await tracker.store_forecast(
-            station, target_date, "visualcrossing",
+            station, target_date, "visual_crossing",
             raw_high_c, raw_high_f, corrected_c, corrected_f,
         )
         return forecast
 
     except Exception as e:
-        logger.error("Visual Crossing error for %s: %s", station, e)
+        logger.error("Visual Crossing error: %s", e)
         return None
 
 
@@ -1108,3 +1119,73 @@ def get_model_confluence(models_data: Dict[str, ModelForecast], unit: str = "F")
     models_str = " | ".join(model_list)
     
     return f"🌡️ Models ({len(temps)} sources):\n{models_str}\nConsensus: {avg_temp:.1f}°{unit}"
+
+# ---------------------------------------------------------------------------
+# Bayesian Daily High Prediction
+# ---------------------------------------------------------------------------
+async def calculate_daily_high_prediction(
+    models_data: Dict[str, ModelForecast],
+    metar: Optional[Any],
+    local_hour: int,
+    station: str,
+    unit: str = "C"
+) -> float:
+    """
+    Bayesian update of the daily high.
+    Prior = Weighted Model Consensus
+    Data = METAR high so far.
+    If local_hour is late, Prior matters less.
+    """
+    import datetime
+
+    # 1. Base Model Consensus (Prior)
+    if not models_data:
+        prior_mean = 0.0
+    else:
+        temps = [
+            (f.bias_corrected_c if unit == "C" else f.bias_corrected_f) * f.weight
+            for f in models_data.values()
+        ]
+        sum_weights = sum(f.weight for f in models_data.values())
+        prior_mean = sum(temps) / sum_weights if sum_weights > 0 else 0.0
+
+    if not metar or not metar.velocity:
+        return prior_mean
+
+    metar_high = metar.velocity.day_high if unit == "C" else metar.velocity.day_high_f
+
+    # If METAR already exceeded models, models are blown.
+    if metar_high > prior_mean:
+        return metar_high
+
+    # Load historical time-of-high
+    month = datetime.datetime.now().month
+    toh_stats = await tracker.get_time_of_high(station, month)
+
+    # Calculate Probability(High happens AFTER current hour)
+    prob_after_now = 0.0
+    total_samples = 0
+    if toh_stats:
+        for row in toh_stats:
+            samples = row["sample_count"]
+            total_samples += samples
+            if row["hour_local"] > local_hour:
+                prob_after_now += samples
+
+    if total_samples > 10:
+        p_remaining = prob_after_now / total_samples
+    else:
+        # Fallback heuristic: assume high is around 15:00 local
+        if local_hour < 11: p_remaining = 0.9
+        elif local_hour < 13: p_remaining = 0.6
+        elif local_hour < 15: p_remaining = 0.3
+        elif local_hour < 17: p_remaining = 0.1
+        else: p_remaining = 0.0
+
+    # Bayesian update:
+    # Prediction = METAR_High + (Prior - METAR_High) * P(remaining)
+    # The later it is, the less room there is to reach the prior if we are far below it.
+    prediction = metar_high + (prior_mean - metar_high) * p_remaining
+
+    # Floor it at the actual observed high
+    return max(prediction, metar_high)
