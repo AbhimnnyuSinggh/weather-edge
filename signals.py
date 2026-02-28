@@ -158,8 +158,17 @@ def _scan_edges(station: str, city: str, target_date_val: date,
     """
     from distribution import build_bin_distribution, format_distribution_text
 
+    ensemble_members = None
+    if "ensemble" in models_data:
+        ens_c = getattr(models_data["ensemble"], "ensemble_members", [])
+        if ens_c:
+            if unit.upper() == "F":
+                ensemble_members = [c * 9.0/5.0 + 32.0 for c in ens_c]
+            else:
+                ensemble_members = ens_c
+
     # Build probability distribution
-    dist = build_bin_distribution(models_data, bins, unit)
+    dist = build_bin_distribution(models_data, bins, unit, ensemble_members=ensemble_members)
     if not dist:
         return []
 

@@ -60,6 +60,7 @@ class ModelForecast:
     bias_corrected_c: float
     bias_corrected_f: float
     weight: float
+    ensemble_members: List[float] = field(default_factory=list)
     fetched_at: datetime = None
 
     def __post_init__(self):
@@ -131,6 +132,11 @@ async def fetch_all_stations(stations_cfg: dict) -> Dict[str, Dict[str, ModelFor
             mos_result = await _fetch_noaa_mos(icao, cfg)
             if mos_result:
                 results[icao]["noaa_mos"] = mos_result
+
+        # 7) Open-Meteo Ensemble
+        ensemble_result = await _fetch_open_meteo_ensemble(icao, lat, lon, cfg)
+        if ensemble_result:
+            results[icao]["ensemble"] = ensemble_result
 
     # Log source summary
     sources_used = set()
@@ -630,6 +636,83 @@ def _parse_mos_max_temp(text: str) -> Optional[float]:
                 except ValueError:
                     continue
     return None
+
+
+# ---------------------------------------------------------------------------
+# Open-Meteo Ensemble fetch (Free, 31 members)
+# ---------------------------------------------------------------------------
+async def _fetch_open_meteo_ensemble(station: str, lat: float, lon: float,
+                                      station_cfg: dict) -> Optional[ModelForecast]:
+    """Fetch 31-member GFS ensemble from Open-Meteo."""
+    try:
+        params = {
+            "latitude": lat,
+            "longitude": lon,
+            "models": "gfs_seamless",
+            "daily": "temperature_2m_max",
+            "timezone": "auto"
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                OPEN_METEO_ENSEMBLE_URL, params=params,
+                headers={"User-Agent": USER_AGENT},
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                if resp.status != 200:
+                    return None
+                data = await resp.json()
+
+        daily = data.get("daily", {})
+        times = daily.get("time", [])
+        if not times:
+            return None
+
+        target_idx = 1 if len(times) > 1 else 0
+        target_date_str = times[target_idx][:10]
+        try:
+            target_date = date.fromisoformat(target_date_str)
+        except ValueError:
+            target_date = date.today() + timedelta(days=1)
+
+        members_c = []
+        for i in range(1, 32):  # Members 00..31 in some models, but open-meteo usually uses member01..member31
+            key = f"temperature_2m_max_member{i:02d}"
+            arr = daily.get(key)
+            if arr and len(arr) > target_idx and arr[target_idx] is not None:
+                members_c.append(float(arr[target_idx]))
+
+        if len(members_c) < 10:  # Not a real ensemble if too few members
+            return None
+
+        bias_c = await _get_bias(station, "ensemble", station_cfg)
+        members_corrected_c = [m - bias_c for m in members_c]
+
+        raw_high_c = sum(members_c) / len(members_c)
+        raw_high_f = raw_high_c * 9.0 / 5.0 + 32.0
+        corrected_c = raw_high_c - bias_c
+        corrected_f = corrected_c * 9.0 / 5.0 + 32.0
+
+        weight = await _get_weight(station, "ensemble")
+
+        forecast = ModelForecast(
+            station=station, model_name="ensemble",
+            target_date=target_date,
+            raw_high_c=raw_high_c, raw_high_f=raw_high_f,
+            bias_corrected_c=corrected_c, bias_corrected_f=corrected_f,
+            weight=weight,
+            ensemble_members=members_corrected_c
+        )
+        
+        await tracker.store_forecast(
+            station, target_date, "ensemble",
+            raw_high_c, raw_high_f, corrected_c, corrected_f,
+        )
+
+        return forecast
+
+    except Exception as e:
+        logger.error("Open-Meteo Ensemble error for %s: %s", station, e)
+        return None
 
 
 # ---------------------------------------------------------------------------
