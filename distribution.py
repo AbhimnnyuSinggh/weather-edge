@@ -73,12 +73,21 @@ def calculate_bin_probabilities(models_data: Dict[str, ModelForecast], bins: lis
                 z_low = (bin_low - temp) / std_dev
                 z_high = (bin_high - temp) / std_dev
                 model_prob = norm_cdf(z_high) - norm_cdf(z_low)
-            else:
                 model_prob = 0.0
                 
             prob += (weight / total_weight) * model_prob
 
-        bin_probs[bin_label] = round(prob, 4)
+        bin_probs[bin_label] = prob
+
+    # Normalize probabilities to sum to 1.0 (100%) to prevent
+    # probability leakage when tail bins are excluded from standard arrays.
+    total_prob_sum = sum(bin_probs.values())
+    if total_prob_sum > 0:
+        for label in bin_probs:
+            bin_probs[label] = round(bin_probs[label] / total_prob_sum, 4)
+    else:
+        for label in bin_probs:
+            bin_probs[label] = 0.0
 
     return bin_probs
 

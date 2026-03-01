@@ -493,7 +493,8 @@ async def cmd_city_analysis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ]
 
         m1 = []
-        for mn in ["gfs", "ecmwf", "icon", "gem"]:
+        m1_keys = ["gfs", "ecmwf", "icon", "gem"]
+        for mn in m1_keys:
             fc = models_data.get(mn)
             t_str = f"{fc.bias_corrected_c:.0f}°C" if unit == "C" else (f"{fc.bias_corrected_f:.0f}°F" if fc else "—")
             m1.append(f"{ABBR[mn]}: {t_str}")
@@ -502,26 +503,30 @@ async def cmd_city_analysis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         
         m2 = []
         if city_config.get("country", "US") == "US":
-            for mn in ["nws", "noaa_mos", "visual_crossing"]:
-                fc = models_data.get(mn)
-                t_str = f"{fc.bias_corrected_f:.0f}°F" if fc else "—"
-                m2.append(f"{ABBR[mn]}: {t_str}")
+            m2_keys = ["nws", "noaa_mos", "visual_crossing"]
         elif tz_name.startswith("Asia/"):
-            for mn in ["jma", "visual_crossing", "nws", "noaa_mos"]:
-                fc = models_data.get(mn)
-                t_str = f"{fc.bias_corrected_c:.0f}°C" if fc else "—"
-                m2.append(f"{ABBR[mn]}: {t_str}")
+            m2_keys = ["jma", "visual_crossing", "nws", "noaa_mos"]
         else:
-            for mn in ["visual_crossing", "jma", "nws", "noaa_mos"]:
-                fc = models_data.get(mn)
-                t_str = f"{fc.bias_corrected_c:.0f}°C" if fc else "—"
-                m2.append(f"{ABBR[mn]}: {t_str}")
+            m2_keys = ["visual_crossing", "jma", "nws", "noaa_mos"]
+
+        for mn in m2_keys:
+            fc = models_data.get(mn)
+            t_str = f"{fc.bias_corrected_f:.0f}°F" if city_config.get("country", "US") == "US" and mn in ["nws", "noaa_mos", "visual_crossing"] else (f"{fc.bias_corrected_c:.0f}°C" if fc else "—")
+            if mn == "visual_crossing" and city_config.get("country", "US") == "US":
+                t_str = f"{fc.bias_corrected_f:.0f}°F" if fc else "—" # explicitly handle
+            elif city_config.get("country", "US") == "US" and fc:
+                t_str = f"{fc.bias_corrected_f:.0f}°F"    
+            elif fc:
+                t_str = f"{fc.bias_corrected_c:.0f}°C"
+                
+            m2.append(f"{ABBR.get(mn, mn)}: {t_str}")
             
         dashboard_msg.append("  " + " | ".join(m2))
             
-        valid_models = [m for k, m in models_data.items() if m and k in MODEL_ORDER]
+        allowed_keys = m1_keys + m2_keys
+        valid_models = [m for k, m in models_data.items() if m and k in allowed_keys]
         reporting_count = len(valid_models)
-        total_models = 7 if city_config.get("country", "US") == "US" else 6
+        total_models = len(allowed_keys)
         dashboard_msg.append(f"  ✅ {reporting_count}/{total_models} models reporting")
         
         # Confidence label
