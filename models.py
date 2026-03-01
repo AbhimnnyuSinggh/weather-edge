@@ -172,7 +172,10 @@ async def _fetch_open_meteo(station: str, lat: float, lon: float,
     max_retries = 3
     for attempt in range(max_retries):
         try:
-            async with aiohttp.ClientSession() as session:
+            ssl_context = ssl.create_default_context()
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+            async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context)) as session:
                 async with session.get(
                     fetch_url, params=params,
                     timeout=aiohttp.ClientTimeout(total=15)
@@ -186,6 +189,12 @@ async def _fetch_open_meteo(station: str, lat: float, lon: float,
                         else:
                             logger.warning("Open-Meteo HTTP 429: Rate limit exhausted for %s", station)
                             return results
+                    if resp.status in (401, 403) and "customer" in fetch_url:
+                        logger.warning("Open-Meteo API key unauthorized for Customer-API. Falling back to public endpoint.")
+                        fetch_url = fetch_url.replace("customer-api.open-meteo.com", "api.open-meteo.com")
+                        if "apikey" in params:
+                            del params["apikey"]
+                        continue
                     if resp.status != 200:
                         logger.error("Open-Meteo HTTP %d for %s", resp.status, station)
                         return results
@@ -474,7 +483,11 @@ async def _fetch_visual_crossing(station: str, lat: float, lon: float,
             "contentType": "json"
         }
         
-        async with aiohttp.ClientSession() as session:
+        ssl_context = ssl.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context)) as session:
             async with session.get(
                 url, params=params,
                 headers={"User-Agent": USER_AGENT},
