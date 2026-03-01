@@ -54,6 +54,7 @@ class StationMETAR:
     temp_c: float
     temp_f: float
     dewpoint_c: float
+    dewpoint_f: float
     wind_dir: int
     wind_speed_kt: int
     wind_gust_kt: Optional[int]
@@ -142,6 +143,7 @@ def parse_metar(raw: dict) -> Optional[StationMETAR]:
     temp_c = float(raw.get("temp", 0))
     temp_f = temp_c * 9.0 / 5.0 + 32.0
     dewpoint_c = float(raw.get("dewp", 0))
+    dewpoint_f = dewpoint_c * 9.0 / 5.0 + 32.0
 
     wind_dir = int(raw.get("wdir", 0)) if raw.get("wdir") not in (None, "VRB") else 0
     wind_speed = int(raw.get("wspd", 0))
@@ -165,6 +167,7 @@ def parse_metar(raw: dict) -> Optional[StationMETAR]:
         temp_c=temp_c,
         temp_f=temp_f,
         dewpoint_c=dewpoint_c,
+        dewpoint_f=dewpoint_f,
         wind_dir=wind_dir,
         wind_speed_kt=wind_speed,
         wind_gust_kt=wind_gust,
