@@ -146,7 +146,7 @@ async def _fetch_open_meteo(station: str, lat: float, lon: float,
     """Fetch forecasts from Open-Meteo for multiple models in one call."""
     model_map = {
         "gfs": "gfs_seamless",
-        "ecmwf": "ecmwf_ifs04",
+        "ecmwf": "ecmwf_ifs025",
         "icon": "icon_seamless",
         "gem": "gem_seamless",
         "jma": "jma_seamless",
@@ -529,30 +529,55 @@ async def _fetch_noaa_mos(station: str,
     Only available for US stations.
     """
     try:
-        params = {"station": station, "type": "met"}
-        async with aiohttp.ClientSession() as session:
+        url = "https://mesonet.agron.iastate.edu/mos/csv.php"
+        params = {"station": station, "model": "GFS"}
+        
+        # IEM SSL cert chain is sometimes missing locally on MacOS, circumventing quietly.
+        ssl_context = ssl.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+        
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context)) as session:
             async with session.get(
-                NOAA_MOS_URL, params=params,
+                url, params=params,
                 headers={"User-Agent": USER_AGENT},
                 timeout=aiohttp.ClientTimeout(total=10),
             ) as resp:
                 if resp.status != 200:
-                    logger.debug("NOAA MOS HTTP %d for %s", resp.status, station)
+                    logger.debug("IEM MOS HTTP %d for %s", resp.status, station)
                     return None
                 text = await resp.text()
 
-        if not text or station not in text:
-            return None
-
-        # Parse MAX line from MOS text
-        max_temp_f = _parse_mos_max_temp(text)
-        if max_temp_f is None:
-            logger.debug("NOAA MOS: no MAX temp found for %s", station)
+        import csv
+        lines = text.splitlines()
+        reader = csv.DictReader(lines)
+        
+        tz_name = station_cfg.get("tz", "UTC")
+        now_local = datetime.now(pytz.timezone(tz_name))
+        
+        # Look for the max temperature for the target date from hourly `tmp` metrics
+        target_date_str = now_local.strftime("%Y-%m-%d")
+        
+        raw_high_f = -999.0
+        found = False
+        for row in list(reader)[:200]:
+            if row.get('ftime', '').startswith(target_date_str):
+                tmp_str = row.get('tmp')
+                if tmp_str:
+                    try:
+                        t = float(tmp_str)
+                        if t > raw_high_f:
+                            raw_high_f = t
+                            found = True
+                    except ValueError:
+                        pass
+        
+        if not found or raw_high_f == -999.0:
+            logger.debug("IEM MOS: no temperature points found for %s today", station)
             return None
 
         raw_high_c = (raw_high_f - 32.0) * 5.0 / 9.0
-        tz_name = station_cfg.get("tz", "UTC")
-        target_date = datetime.now(pytz.timezone(tz_name)).date()  # MOS MAX is for today
+        target_date = datetime.now(pytz.timezone(tz_name)).date()
 
         bias_c = await _get_bias(station, "noaa_mos", station_cfg)
         corrected_c = raw_high_c - bias_c
@@ -573,25 +598,8 @@ async def _fetch_noaa_mos(station: str,
         return forecast
 
     except Exception as e:
-        logger.error("NOAA MOS error for %s: %s", station, e)
+        logger.error("IEM MOS error for %s: %s", station, e)
         return None
-
-
-def _parse_mos_max_temp(text: str) -> Optional[float]:
-    """Extract MAX temperature from MOS text output."""
-    for line in text.split("\n"):
-        stripped = line.strip()
-        if stripped.startswith("X/N") or stripped.startswith("N/X"):
-            # Format: X/N or N/X followed by values
-            parts = stripped.split()
-            for part in parts[1:]:
-                try:
-                    val = int(part)
-                    if -40 <= val <= 130:  # Reasonable F range
-                        return float(val)
-                except ValueError:
-                    continue
-    return None
 
 
 # ---------------------------------------------------------------------------
