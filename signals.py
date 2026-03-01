@@ -215,42 +215,42 @@ def analyze_market(market_group: MarketGroup, probs: Dict[str, float], total_cap
             b = sorted_bins[i]
             lbl = b.bin.label
             prob = probs.get(lbl, 0)
-        mkt_price = b.yes_price
-        
-        if prob < 0.05 and mkt_price > 0.10:
-            no_price = 1.0 - mkt_price
-            no_prob = 1.0 - prob
-            edge = no_prob - no_price
-            if edge > 0.08 and no_price > 0.01:
-                alloc_pct = 35
-                alloc_amount = max_deployable * (alloc_pct / 100.0)
-                shares = alloc_amount / no_price
-                shares = float(int(shares))
-                cost = shares * no_price
-                profit = shares * mkt_price # NO payout = initial YES price per share
-                ev = (no_prob * profit) - ((1.0 - no_prob) * cost)
-                if ev <= 100:
-                    trades["no_tail"] = {
-                        "valid": True,
-                        "label": "NO TAIL (Stability Floor)",
-                        "action_emoji": "⛔",
-                        "action": "BUY NO",
-                        "side": "NO",
-                        "bin_label": lbl,
-                        "price": int(mkt_price * 100),
-                        "alloc_pct": alloc_pct,
-                        "alloc_amount": alloc_amount,
-                        "shares": shares,
-                        "cost": cost,
-                        "payout": shares * 1.0, 
-                        "profit": profit,
-                        "win_prob": int(no_prob * 100),
-                        "lose_prob": int((1.0 - no_prob) * 100),
-                        "ev": ev,
-                        "edge": int(edge * 100),
-                        "timing_advice": "Check METAR explicitly. NO tails trigger best when temp has provably peaked."
-                    }
-                break
+            mkt_price = b.yes_price
+            
+            if prob < 0.05 and mkt_price > 0.10:
+                no_price = 1.0 - mkt_price
+                no_prob = 1.0 - prob
+                edge = no_prob - no_price
+                if edge > 0.08 and no_price > 0.01:
+                    alloc_pct = 35
+                    alloc_amount = max_deployable * (alloc_pct / 100.0)
+                    shares = alloc_amount / no_price
+                    shares = float(int(shares))
+                    cost = shares * no_price
+                    profit = shares * mkt_price # NO payout = initial YES price per share
+                    ev = (no_prob * profit) - ((1.0 - no_prob) * cost)
+                    if ev <= 100:
+                        trades["no_tail"] = {
+                            "valid": True,
+                            "label": "NO TAIL (Stability Floor)",
+                            "action_emoji": "⛔",
+                            "action": "BUY NO",
+                            "side": "NO",
+                            "bin_label": lbl,
+                            "price": int(mkt_price * 100),
+                            "alloc_pct": alloc_pct,
+                            "alloc_amount": alloc_amount,
+                            "shares": shares,
+                            "cost": cost,
+                            "payout": shares * 1.0, 
+                            "profit": profit,
+                            "win_prob": int(no_prob * 100),
+                            "lose_prob": int((1.0 - no_prob) * 100),
+                            "ev": ev,
+                            "edge": int(edge * 100),
+                            "timing_advice": "Check METAR explicitly. NO tails trigger best when temp has provably peaked."
+                        }
+                    break
     
     # Calculate deployed cap
     deployed = sum(t["cost"] for t in trades.values() if t.get("valid"))
