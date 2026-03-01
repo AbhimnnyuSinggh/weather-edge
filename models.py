@@ -199,12 +199,14 @@ async def _fetch_open_meteo(station: str, lat: float, lon: float,
                                 logger.error("Open-Meteo fallback HTTP %d for %s", fallback_resp.status, station)
                                 return results
                             data = await fallback_resp.json()
-                            break # Break the retry loop as fallback was attempted
-                    if resp.status != 200:
+                            break # Fallback success, break retry loop
+
+                    elif resp.status != 200:
                         logger.error("Open-Meteo HTTP %d for %s", resp.status, station)
                         return results
-                    data = await resp.json()
-                    break # Break the retry loop on success
+                    else:
+                        data = await resp.json()
+                        break # Primary success, break retry loop
         except Exception as e:
             if attempt < max_retries - 1:
                 logger.warning("Open-Meteo error for %s (attempt %d): %s, retrying...", station, attempt+1, e)
