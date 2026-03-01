@@ -441,87 +441,187 @@ async def cmd_city_analysis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             m_high_floor = "Yes"
 
         # 7. Distribution / Edge Scan
+        # 7. Distribution / Edge Scan
         import distribution
+        import signals
+        probs = distribution.calculate_bin_probabilities(models_data, market_group.bins if market_group else [], unit)
+        
+        # 8. Signals & Trades
+        ws = await wallet_mod.get_capital_summary()
+        total_cap = ws["total_value"]
+        reserve = total_cap * 0.15
+        
+        if market_group and market_group.bins:
+            trade_instructions, deployed = signals.analyze_market(market_group, probs, total_cap)
+            deployable = max(0, total_cap - reserve) # Initial deployable
+            remaining = max(0, deployable - deployed)
+        else:
+            trade_instructions, deployed, deployable, remaining = {}, 0, 0, 0
+            
+        # --- BUILD FINAL DASHBOARD ---
+        
+        # Peak estimation
+        current_month = now_local.month
+        PEAK_HOURS = {
+            "KMIA": {1: 15, 2: 15, 3: 15, 4: 15, 5: 14, 6: 14, 7: 14, 8: 14, 9: 15, 10: 15, 11: 15, 12: 15},
+            "KLGA": {1: 14, 2: 14, 3: 15, 4: 15, 5: 15, 6: 16, 7: 16, 8: 16, 9: 15, 10: 15, 11: 14, 12: 14},
+            "KORD": {1: 14, 2: 14, 3: 15, 4: 15, 5: 15, 6: 16, 7: 16, 8: 15, 9: 15, 10: 15, 11: 14, 12: 14},
+            "RKSI": {1: 14, 2: 14, 3: 15, 4: 15, 5: 15, 6: 15, 7: 15, 8: 15, 9: 15, 10: 14, 11: 14, 12: 14},
+            "EGLC": {1: 14, 2: 14, 3: 15, 4: 15, 5: 16, 6: 16, 7: 16, 8: 16, 9: 15, 10: 14, 11: 14, 12: 14},
+        }
+        peak_hour = PEAK_HOURS.get(icao, {}).get(current_month, 15)
+        
+        peak_start_local = now_local.replace(hour=peak_hour-1, minute=0, second=0, microsecond=0)
+        peak_end_local = now_local.replace(hour=peak_hour+1, minute=0, second=0, microsecond=0)
+        ist_tz = pytz.timezone("Asia/Kolkata")
+        peak_start_ist = peak_start_local.astimezone(ist_tz)
+        peak_end_ist = peak_end_local.astimezone(ist_tz)
+        
+        target_dt_str = target_date.strftime('%b %-d, %Y')
+        now_ist_str = datetime.now(ist_tz).strftime('%I:%M %p')
         
         dashboard_msg = [
-            f"🌡️ **{city_name} ({icao}) — Live Status**",
-            f"   Time: {now_local.strftime('%I:%M %p %Z')}",
-            f"   METAR: {now_temp_str}{high_so_far_str}",
-            f"   Market: {market_link}\n",
-            f"🔄 **Active Market Scan ({target_date.strftime('%b %-d')})**"
+            f"🌡️ {city_name.upper()} ({icao}) — {target_dt_str} | {now_ist_str} IST",
+            "",
+            "━━ LIVE STATUS ━━",
+            f"🌡️ Current temp: {now_temp_str} (METAR recently)",
+            f"📈 Today's high so far: {high_so_far_val:.0f}°{unit} (hit at {high_so_far_str.replace(' / High so far: ','')})" if high_so_far_val else f"📈 Today's high so far: —",
+            f"🕐 Local time: {now_local.strftime('%I:%M %p %Z')}",
+            f"   High likely to hit: {peak_start_local.strftime('%I:%M')} - {peak_end_local.strftime('%I:%M %p %Z')} ({peak_start_ist.strftime('%I:%M')} - {peak_end_ist.strftime('%I:%M %p')} IST)",
+            "",
+            f"━━ MODEL FORECASTS (Today's High) ━━"
         ]
 
-        if not market_group or not market_group.bins:
-            dashboard_msg.append("   ⚠️ No active market found on Polymarket.\n")
-            edge_scan_lines = ["   No market data to scan."]
-            market_bins = []
-        else:
-            bin_strs = []
-            market_bins = market_group.bins
-            for b in market_bins:
-                bin_strs.append(f"{b.bin.label} ({b.yes_price*100:.0f}¢)")
+        m1 = []
+        for mn in ["gfs", "ecmwf", "icon", "gem"]:
+            fc = models_data.get(mn)
+            t_str = f"{fc.bias_corrected_c:.0f}°C" if unit == "C" else (f"{fc.bias_corrected_f:.0f}°F" if fc else "—")
+            m1.append(f"{ABBR[mn]}: {t_str}")
             
-            # chunk bins to display cleanly
-            if len(bin_strs) <= 3:
-                dashboard_msg.append("   " + " | ".join(bin_strs) + "\n")
-            else:
-                dashboard_msg.append("   " + " | ".join(bin_strs[:3]))
-                dashboard_msg.append("   " + " | ".join(bin_strs[3:]) + "\n")
-
-            # Edge Scan logic
-            probs = distribution.calculate_bin_probabilities(models_data, market_bins, unit)
-            edge_scan_lines = []
-            for b in market_bins:
+        dashboard_msg.append("  " + " | ".join(m1))
+        
+        m2 = []
+        if city_config.get("country", "US") == "US":
+            for mn in ["nws", "noaa_mos", "visual_crossing"]:
+                fc = models_data.get(mn)
+                t_str = f"{fc.bias_corrected_f:.0f}°F" if fc else "—"
+                m2.append(f"{ABBR[mn]}: {t_str}")
+        elif tz_name.startswith("Asia/"):
+            for mn in ["jma", "visual_crossing", "nws", "noaa_mos"]:
+                fc = models_data.get(mn)
+                t_str = f"{fc.bias_corrected_c:.0f}°C" if fc else "—"
+                m2.append(f"{ABBR[mn]}: {t_str}")
+        else:
+            for mn in ["visual_crossing", "jma", "nws", "noaa_mos"]:
+                fc = models_data.get(mn)
+                t_str = f"{fc.bias_corrected_c:.0f}°C" if fc else "—"
+                m2.append(f"{ABBR[mn]}: {t_str}")
+            
+        dashboard_msg.append("  " + " | ".join(m2))
+            
+        reporting_count = sum(1 for v in models_data.values() if v)
+        total_models = 7 if city_config.get("country", "US") == "US" else 6
+        dashboard_msg.append(f"  ✅ {reporting_count}/{total_models} models reporting")
+        
+        # Confidence label
+        within_2 = sum(1 for f in models_data.values() if f and (
+            abs(f.bias_corrected_f - predicted_high) <= 2.0 if unit == "F" else abs(f.bias_corrected_c - predicted_high) <= 2.0))
+        conf_frac = within_2 / max(1, reporting_count)
+        if conf_frac >= 0.85: conf_lbl = "HIGH"
+        elif conf_frac >= 0.60: conf_lbl = "MEDIUM"
+        else: conf_lbl = "LOW"
+        detail = f"{within_2}/{reporting_count} models within 2°{unit}"
+        
+        dashboard_msg.extend([
+            "",
+            f"━━ PREDICTED DAILY HIGH: {predicted_high:.1f}°{unit} ━━",
+            f"  Bin: ... | Confidence: {conf_lbl} ({detail})",
+            "",
+            f"━━ MARKET EDGE SCAN ━━",
+            f"  Bin        Price   Our Prob   Edge     Signal"
+        ])
+        
+        if not market_group or not market_group.bins:
+            dashboard_msg.append(f"  No active Polymarket market found for {city_name} today.")
+            dashboard_msg.append(f"  Models predict {predicted_high}°{unit} — watch for market creation.")
+        else:
+            for b in market_group.bins:
                 lbl = b.bin.label
                 model_pct = probs.get(lbl, 0)
                 mkt_pct = b.yes_price
                 edge = model_pct - mkt_pct
-                if edge > 0.05 or mkt_pct >= 0.10: # Only show significant bins
-                    edge_str = f"{edge*100:+.1f}%"
-                    edge_scan_lines.append(f"   {lbl}: Model {model_pct*100:.1f}% - Market {mkt_pct*100:.0f}% = Edge {edge_str}")
+                edge_str = f"{edge*100:+.0f}%"
+                
+                sig = "—"
+                if edge > 0.10: sig = "🟢 BUY YES"
+                elif edge > 0.05: sig = "🟡 WEAK YES"
+                elif edge < -0.10 and (1-model_pct) - (1-mkt_pct) > 0.08: sig = "🔴 BUY NO"
+                
+                dashboard_msg.append(f"  {lbl:<10}  {mkt_pct*100:2.0f}¢    {model_pct*100:2.0f}%     {edge_str:<6}   {sig}")
+
+        dashboard_msg.extend([
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "📍 RECOMMENDED TRADES",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            f"💰 Your balance: ${total_cap:.2f} | Reserve (15%): ${reserve:.2f}",
+            f"   Deployable: ${deployable:.2f}"
+        ])
+        
+        for idx, (t_type, t_cfg) in enumerate(trade_instructions.items()):
+            if not t_cfg.get("valid"):
+                dashboard_msg.extend([
+                    f"TRADE {idx+1} — {t_cfg.get('label', t_type)}",
+                    f"  {t_cfg.get('skip_reason', 'Skipped')}",
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                 ])
+            else:
+                dashboard_msg.extend([
+                    f"TRADE {idx+1} — {t_cfg['label']}",
+                    f"  {t_cfg['action_emoji']} {t_cfg['action']} \"{t_cfg['bin_label']}\" at {t_cfg['price']}¢",
+                    f"  Allocation: {t_cfg['alloc_pct']}% = ${t_cfg['alloc_amount']:.2f}",
+                    f"  Shares: {t_cfg['shares']:.2f} | Cost: ${t_cfg['cost']:.2f}",
+                    f"  If win: ${t_cfg['payout']:.2f} payout → +${t_cfg['profit']:.2f} profit",
+                    f"  If lose: -${t_cfg['cost']:.2f}",
+                    f"  EV: ({t_cfg['win_prob']}% × ${t_cfg['profit']:.2f}) - ({t_cfg['lose_prob']}% × ${t_cfg['cost']:.2f}) = +${t_cfg['ev']:.2f}",
+                    f"  Edge: +{t_cfg['edge']}% | Win prob: {t_cfg['win_prob']}%",
+                    "",
+                    "  HOW TO EXECUTE:",
+                    f"  1. Open: {market_link}",
+                    f"  2. Find bin \"{t_cfg['bin_label']}\"",
+                    f"  3. Click {t_cfg['side']} → set price to {t_cfg['price']}¢ or lower",
+                    f"  4. Enter ${t_cfg['cost']:.2f} or {t_cfg['shares']:.0f} shares",
+                    "  5. Click \"Buy\"",
+                    "",
+                    f"⏰ TIMING: {t_cfg['timing_advice']}",
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                ])
+                
+        dashboard_msg.extend([
+            "━━ CAPITAL DEPLOYMENT ━━",
+            f"  Available:     ${deployable:.2f}"
+        ])
+        for idx, (t_type, t_cfg) in enumerate(trade_instructions.items()):
+            if t_cfg.get("valid"): dashboard_msg.append(f"  Trade {idx+1} ({t_cfg['side']}): -${t_cfg['cost']:.2f}")
+            else: dashboard_msg.append(f"  Trade {idx+1} ({t_cfg.get('label', 'N/A')[:4]}): SKIPPED")
         
         dashboard_msg.extend([
-            f"📊 **Model Forecasts (Unit: {unit})**",
-            f"   METAR: {now_temp_str.replace('°'+unit,'')} | M-High: {m_high_str.replace('°'+unit,'')}",
-            f"   {row1}",
-            f"   {row2}\n",
-            f"📈 **Predicted Daily High**",
-            f"   Bayesian Blend: {predicted_high:.1f}°{unit} (M-High Floor: {m_high_floor})\n",
-            f"🎯 **Edge Scan**"
+            "  ─────────────",
+            f"  Remaining:     ${remaining:.2f}",
+            "",
+            "━━ RISK NOTES ━━"
         ])
-        dashboard_msg.extend(edge_scan_lines)
-
-        # 8. Signals & Trades
-        import signals
-        dashboard_msg.append(f"\n💡 **Recommended Trades (Total TVL: $[Cap] Placeholder)**")
-        if market_group and market_group.bins:
-            # We need wallet TVL
-            ws = await wallet_mod.get_capital_summary()
-            total_cap = ws["total_value"]
-            dashboard_msg[-1] = f"💡 **Recommended Trades (Total TVL: ${total_cap:.0f})**"
-            trade_instructions, _, _ = signals.analyze_market(market_group, probs, total_cap)
-            if not trade_instructions:
-                dashboard_msg.append("   No trades meet the EV / edge threshold.")
-            else:
-                for t in trade_instructions:
-                    dashboard_msg.append(f"   {t}")
-        else:
-            dashboard_msg.append("   No trades: No market.")
-
-        # 9. Risk Notes
-        dashboard_msg.append(f"\n⚠️ **Risk Notes**")
-        if city_config["is_coastal"]:
-            dashboard_msg.append("   1. Coastal City - Sea breeze / Humidity volatility.")
-        else:
-            dashboard_msg.append("   1. Inland City - Diurnal variation.")
+        
+        if city_config.get("is_coastal"):
+            dashboard_msg.append("⚠️ Coastal City - Sea breeze / Humidity volatility.")
             
         if high_so_far_val and high_so_far_val > predicted_high + 1:
-            dashboard_msg.append(f"   2. METAR already {high_so_far_val:.0f}°{unit}, crushing model forecasts.")
+            dashboard_msg.append(f"⚠️ METAR already {high_so_far_val:.0f}°{unit}, crushing model forecasts.")
         else:
-            dashboard_msg.append("   2. METAR behaving as models expect.")
-
+            dashboard_msg.append("📊 METAR behaving as models expect.")
+            
         # Send full dashboard
-        await update.message.reply_text("\n".join(dashboard_msg), parse_mode="Markdown")
+        # Join exactly to respect markdown and newlines
+        await update.message.reply_text("\n".join(dashboard_msg))
 
     except Exception as e:
         logger.error("/%s error: %s", cmd, e)

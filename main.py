@@ -234,19 +234,9 @@ async def main_loop(config: dict):
                 continue
 
             # Step 4.5: Discover newly opened weather markets
-            try:
-                discovered = await markets.discover_temperature_markets()
-                for icao, info in discovered.items():
-                    if icao not in stations_cfg:
-                        station_info = markets.ICAO_INFO.get(icao)
-                        if station_info:
-                            stations_cfg[icao] = station_info
-                            if icao not in station_ids:
-                                station_ids.append(icao)
-                            logger.info(f"Auto-added station: {icao} ({station_info['city']})")
-                            await tracker.init_stations({icao: station_info})
-            except Exception as e:
-                logger.error("Market discovery error: %s", e)
+            # Refactored: We no longer auto-discover, we strictly poll the 15 configured CITIES.
+            stations_cfg = markets.CITIES
+            station_ids = [cfg["icao"] for cfg in stations_cfg.values()]
 
             # Step 5: Fetch METAR for all stations
             metar_data = {}
@@ -254,9 +244,9 @@ async def main_loop(config: dict):
                 raw_metar = await metar_mod.fetch_all_stations(station_ids)
                 # Enrich with velocity and rounding edge
                 for icao, m in raw_metar.items():
-                    cfg = stations_cfg.get(icao, {})
+                    cfg = next((c for c in stations_cfg.values() if c["icao"] == icao), {})
                     metar_data[icao] = await metar_mod.enrich_metar(
-                        m, cfg.get("timezone", "UTC"), cfg.get("unit", "C")
+                        m, cfg.get("tz", "UTC"), cfg.get("unit", "C")
                     )
             except Exception as e:
                 logger.error("METAR fetch error: %s — using cached", e)
@@ -264,18 +254,43 @@ async def main_loop(config: dict):
             # Step 6: Fetch model forecasts
             model_data = {}
             try:
+                # Build dict mapping icao -> config for models_mod
+                models_cfg = {c["icao"]: c for c in stations_cfg.values()}
                 if scheduler.should_fetch_models(config):
-                    model_data = await models_mod.fetch_all_stations(stations_cfg)
+                    model_data = await models_mod.fetch_all_stations(models_cfg)
                     scheduler.mark_models_fetched()
                 else:
-                    model_data = await models_mod.get_latest_from_db(stations_cfg)
+                    model_data = await models_mod.get_latest_from_db(models_cfg)
             except Exception as e:
                 logger.error("Model fetch error: %s", e)
 
-            # Step 7: Fetch Polymarket markets
+            # Step 7: Fetch Polymarket markets (today and tomorrow for all 15 cities)
             market_data = {}
+            active_markets_count = 0
             try:
-                market_data = await markets.fetch_active_weather_markets(station_ids)
+                import datetime as dt
+                # Determine "today" based on bot server UTC
+                utc_now = datetime.utcnow().date()
+                today_date = utc_now
+                tomorrow_date = utc_now + dt.timedelta(days=1)
+                
+                for city_cmd, city_cfg in stations_cfg.items():
+                    icao = city_cfg["icao"]
+                    
+                    # Fetch Today
+                    mg_today = await markets.fetch_city_market(city_cmd, today_date)
+                    if mg_today and mg_today.bins:
+                        key = f"{icao}_{today_date}"
+                        market_data[key] = mg_today
+                        active_markets_count += 1
+                        
+                    # Fetch Tomorrow
+                    mg_tomorrow = await markets.fetch_city_market(city_cmd, tomorrow_date)
+                    if mg_tomorrow and mg_tomorrow.bins:
+                        key = f"{icao}_{tomorrow_date}"
+                        market_data[key] = mg_tomorrow
+                        active_markets_count += 1
+                        
             except Exception as e:
                 logger.error("Market fetch error: %s — retrying in 30s", e)
                 await asyncio.sleep(30)
