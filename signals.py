@@ -162,6 +162,11 @@ def analyze_market(market_group: MarketGroup, probs: Dict[str, float], total_cap
                 }
             break
 
+    # Common variable used by both LOCK-IN and NO TAIL
+    highest_prob_bin_idx = -1
+    if sorted_bins:
+        highest_prob_bin_idx = max(range(len(sorted_bins)), key=lambda i: probs.get(sorted_bins[i].bin.label, 0))
+
     # 3. LOCK-IN YES
     # Just check if highest prob is >85%
     if highest_prob_bin_idx >= 0:
@@ -206,9 +211,6 @@ def analyze_market(market_group: MarketGroup, probs: Dict[str, float], total_cap
     # 4. NO TAIL
     # After 2PM checking happens upstream via METAR data check. We don't have METAR here,
     # so we assume if we have a bin >2 ranges above highest prob bin with probability < 5% but market price > 10%
-    highest_prob_bin_idx = -1
-    if sorted_bins:
-        highest_prob_bin_idx = max(range(len(sorted_bins)), key=lambda i: probs.get(sorted_bins[i].bin.label, 0))
         
     if highest_prob_bin_idx >= 0:
         for i in range(highest_prob_bin_idx + 2, len(sorted_bins)):
