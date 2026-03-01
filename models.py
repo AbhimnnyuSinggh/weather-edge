@@ -180,7 +180,7 @@ async def _fetch_open_meteo(station: str, lat: float, lon: float,
                     fetch_url, params=params,
                     timeout=aiohttp.ClientTimeout(total=15)
                 ) as resp:
-                    if resp.status == 429:
+                    if resp.status == 429 and "customer" not in fetch_url:
                         if attempt < max_retries - 1:
                             wait_time = 2 ** attempt
                             logger.warning("Open-Meteo 429 for %s. Retrying in %ds...", station, wait_time)
@@ -189,7 +189,8 @@ async def _fetch_open_meteo(station: str, lat: float, lon: float,
                         else:
                             logger.warning("Open-Meteo HTTP 429: Rate limit exhausted for %s", station)
                             return results
-                    if resp.status in (400, 401, 403) and "customer" in fetch_url:
+                            
+                    if resp.status in (400, 401, 403, 429) and "customer" in fetch_url:
                         logger.warning("Open-Meteo API key unauthorized for Customer-API. Falling back to public endpoint.")
                         fallback_url = fetch_url.replace("customer-api.open-meteo.com", "api.open-meteo.com")
                         if "apikey" in params:
@@ -931,10 +932,11 @@ async def fetch_ensemble(lat: float, lon: float, unit: str = "F") -> List[float]
 
     async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context)) as session:
         async with session.get(url, params=params, timeout=15) as resp:
-            if resp.status in (401, 403) and api_key:
-                logger.warning("Ensemble API key unauthorized. Falling back to free tier.")
+            if resp.status in (401, 403, 429) and api_key:
+                logger.warning("Ensemble API key unauthorized/exhausted. Falling back to free tier.")
                 url = "https://ensemble-api.open-meteo.com/v1/ensemble"
-                del params["apikey"]
+                if "apikey" in params:
+                    del params["apikey"]
                 async with session.get(url, params=params, timeout=15) as resp_fallback:
                     if resp_fallback.status != 200:
                         logger.error("Ensemble API fallback failed with HTTP %d", resp_fallback.status)
@@ -1076,9 +1078,9 @@ async def calculate_daily_high(models_data: Dict[str, ModelForecast], metar: Opt
     
     # Step 5: Dewpoint constraint
     if metar:
-        dewpoint = metar.dewpoint_f if unit == "F" else metar.dewpoint_c
+        dewpoint = getattr(metar, "dewpoint_f", None) if unit == "F" else getattr(metar, "dewpoint_c", None)
         if dewpoint is not None:
-            current_temp = metar.temp_f if unit == "F" else metar.temp_c
+            current_temp = getattr(metar, "temp_f", None) if unit == "F" else getattr(metar, "temp_c", None)
             if current_temp is not None:
                 final, dew_note = dewpoint_adjustment(current_temp, dewpoint, final, unit)
     
