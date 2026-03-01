@@ -189,17 +189,22 @@ async def _fetch_open_meteo(station: str, lat: float, lon: float,
                         else:
                             logger.warning("Open-Meteo HTTP 429: Rate limit exhausted for %s", station)
                             return results
-                    if resp.status in (401, 403) and "customer" in fetch_url:
+                    if resp.status in (400, 401, 403) and "customer" in fetch_url:
                         logger.warning("Open-Meteo API key unauthorized for Customer-API. Falling back to public endpoint.")
-                        fetch_url = fetch_url.replace("customer-api.open-meteo.com", "api.open-meteo.com")
+                        fallback_url = fetch_url.replace("customer-api.open-meteo.com", "api.open-meteo.com")
                         if "apikey" in params:
                             del params["apikey"]
-                        continue
+                        async with session.get(fallback_url, params=params, timeout=aiohttp.ClientTimeout(total=15)) as fallback_resp:
+                            if fallback_resp.status != 200:
+                                logger.error("Open-Meteo fallback HTTP %d for %s", fallback_resp.status, station)
+                                return results
+                            data = await fallback_resp.json()
+                            break # Break the retry loop as fallback was attempted
                     if resp.status != 200:
                         logger.error("Open-Meteo HTTP %d for %s", resp.status, station)
                         return results
                     data = await resp.json()
-                    break
+                    break # Break the retry loop on success
         except Exception as e:
             if attempt < max_retries - 1:
                 logger.warning("Open-Meteo error for %s (attempt %d): %s, retrying...", station, attempt+1, e)
