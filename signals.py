@@ -23,6 +23,105 @@ logger = logging.getLogger("signals")
 
 
 # ---------------------------------------------------------------------------
+# City Dashboard - Trade Analysis
+# ---------------------------------------------------------------------------
+def analyze_market(market_group: MarketGroup, probs: Dict[str, float], total_cap: float):
+    """
+    Analyze the market active bins vs calculated probabilities to generate
+    specific trade recommendations for the City Dashboard.
+    
+    Returns:
+       List[str] of formatted string instructions
+       List of raw dict trades (internal)
+       Reserved capital used
+    """
+    instructions = []
+    trades = []
+    
+    # Capital limits
+    max_deployable = total_cap * 0.85
+    
+    if max_deployable <= 0:
+        return instructions, trades, 0
+
+    # Sort bins to find highest prob and ladders
+    sorted_bins = sorted(market_group.bins, key=lambda b: b.bin.low if b.bin.low is not None else -999)
+    
+    # Find highest probability bin
+    highest_prob_bin = None
+    highest_prob = 0
+    for b in sorted_bins:
+        p = probs.get(b.bin.label, 0)
+        if p > highest_prob:
+            highest_prob = p
+            highest_prob_bin = b
+
+    # 1. LOCK-IN YES
+    if highest_prob_bin and highest_prob > 0.85:
+        mkt_price = highest_prob_bin.yes_price
+        if mkt_price < 0.80:
+            ev = (highest_prob * 1.0) - mkt_price
+            if ev > 0.20:
+                alloc = 40.0
+                trade_ev = min(100.0, alloc * (1.0 / mkt_price - 1.0) * highest_prob)
+                instructions.append(f"🔒 LOCK-IN YES: Buy ${alloc:.0f} YES on '{highest_prob_bin.bin.label}' (EV: ${trade_ev:.0f})")
+
+    # 2. FORECAST YES
+    for b in sorted_bins:
+        lbl = b.bin.label
+        prob = probs.get(lbl, 0)
+        mkt_price = b.yes_price
+        edge = prob - mkt_price
+        
+        if edge > 0.10 and mkt_price < 0.70:
+            # Check if this is not the lock-in bin
+            if not highest_prob_bin or lbl != highest_prob_bin.bin.label or highest_prob <= 0.85:
+                alloc = 25.0
+                trade_ev = min(100.0, alloc * (1.0 / mkt_price - 1.0) * prob)
+                instructions.append(f"📈 FORECAST YES: Buy ${alloc:.0f} YES on '{lbl}' (Edge: +{edge*100:.0f}%, EV: ${trade_ev:.0f})")
+
+    # 3. LADDER
+    for i in range(len(sorted_bins) - 1):
+        b1 = sorted_bins[i]
+        b2 = sorted_bins[i+1]
+        
+        lbl1, lbl2 = b1.bin.label, b2.bin.label
+        p1, p2 = probs.get(lbl1, 0), probs.get(lbl2, 0)
+        m1, m2 = b1.yes_price, b2.yes_price
+        
+        if m1 <= 0.01 or m2 <= 0.01:
+            continue
+            
+        edge1 = p1 - m1
+        edge2 = p2 - m2
+        
+        if edge1 > 0.05 and edge2 > 0.05 and (p1 + p2) > 0.60:
+            alloc_per_rung = 20.0
+            ev1 = min(100.0, alloc_per_rung * (1.0 / m1 - 1.0) * p1)
+            ev2 = min(100.0, alloc_per_rung * (1.0 / m2 - 1.0) * p2)
+            total_ev = min(100.0, ev1 + ev2)
+            
+            instructions.append(f"🪜 LADDER: Buy ${alloc_per_rung:.0f} YES on '{lbl1}' and ${alloc_per_rung:.0f} YES on '{lbl2}' (Total EV: ${total_ev:.0f})")
+
+    # 4. NO TAIL
+    for b in sorted_bins:
+        lbl = b.bin.label
+        prob = probs.get(lbl, 0)
+        mkt_price = b.yes_price
+        edge = prob - mkt_price
+        
+        if edge < -0.10 and mkt_price > 0.10 and prob < 0.02:
+            alloc = 15.0
+            # Buying NO means shorting YES. To short YES, our EV is based on the NO probability (1 - prob) and NO price (1 - mkt_price)
+            no_prob = 1.0 - prob
+            no_price = 1.0 - mkt_price
+            if no_price > 0:
+                trade_ev = min(100.0, alloc * (1.0 / no_price - 1.0) * no_prob)
+                instructions.append(f"📉 NO TAIL: Buy ${alloc:.0f} NO on '{lbl}' (Edge: {edge*100:.0f}%, EV: ${trade_ev:.0f})")
+
+    return instructions, trades, 0
+
+# ---------------------------------------------------------------------------
 # Signal data model
 # ---------------------------------------------------------------------------
 @dataclass

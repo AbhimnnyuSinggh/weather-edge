@@ -30,10 +30,8 @@ logger = logging.getLogger("models")
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
 OPEN_METEO_ENSEMBLE_URL = "https://ensemble-api.open-meteo.com/v1/ensemble"
 NWS_POINTS_URL = "https://api.weather.gov/points"
-TOMORROW_IO_URL = "https://api.tomorrow.io/v4/weather/forecast"
-OPENWEATHER_URL = "https://api.openweathermap.org/data/3.0/onecall"
-WEATHERBIT_URL = "https://api.weatherbit.io/v2.0/forecast/daily"
 NOAA_MOS_URL = "https://aviationweather.gov/cgi-bin/data/mos.php"
+VISUAL_CROSSING_URL = "https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline"
 VISUAL_CROSSING_URL = "https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline"
 USER_AGENT = "WeatherEdgeBot/1.0"
 EWMA_ALPHA = 0.15  # ~90% weight to last 13 data points
@@ -42,14 +40,11 @@ EWMA_ALPHA = 0.15  # ~90% weight to last 13 data points
 DEFAULT_MAE = {
     "gfs": 1.8, "ecmwf": 1.5, "icon": 2.0, "gem": 2.2, "jma": 2.0,
     "nws": 1.5, "noaa_mos": 1.3,
-    "tomorrow_io": 2.0, "openweather": 2.2, "weatherbit": 2.5,
     "visual_crossing": 2.0, "ensemble": 1.0,
 }
 
 # Rate limit tracking (resets per scan cycle)
 _rate_limit_status: Dict[str, str] = {}  # source -> "ok" | "limited" | "no_key"
-_weatherbit_calls_today: int = 0
-_weatherbit_reset_date: Optional[date] = None
 
 
 # ---------------------------------------------------------------------------
@@ -118,37 +113,19 @@ async def fetch_all_stations(stations_cfg: dict) -> Dict[str, Dict[str, ModelFor
             if noaa_result:
                 results[icao]["noaa"] = noaa_result
 
-        # 3) Tomorrow.io
-        if _rate_limit_status.get("tomorrow_io") != "limited":
-            tio_result = await _fetch_tomorrow_io(icao, lat, lon, cfg)
-            if tio_result:
-                results[icao]["tomorrow_io"] = tio_result
-
-        # 4) OpenWeather
-        if _rate_limit_status.get("openweather") != "limited":
-            ow_result = await _fetch_openweather(icao, lat, lon, cfg)
-            if ow_result:
-                results[icao]["openweather"] = ow_result
-
-        # 5) Weatherbit (strict 50/day limit)
-        if _rate_limit_status.get("weatherbit") != "limited":
-            wb_result = await _fetch_weatherbit(icao, lat, lon, cfg)
-            if wb_result:
-                results[icao]["weatherbit"] = wb_result
-
-        # 6) Visual Crossing (1000/day free)
+        # 3) Visual Crossing
         if _rate_limit_status.get("visual_crossing") != "limited":
             vc_result = await _fetch_visual_crossing(icao, lat, lon, cfg)
             if vc_result:
                 results[icao]["visual_crossing"] = vc_result
 
-        # 7) NOAA MOS (US stations only)
+        # 4) NOAA MOS (US stations only)
         if cfg.get("country") == "US":
             mos_result = await _fetch_noaa_mos(icao, cfg)
             if mos_result:
                 results[icao]["noaa_mos"] = mos_result
 
-        # 7) Open-Meteo Ensemble
+        # 5) Open-Meteo Ensemble
         ensemble_result = await _fetch_open_meteo_ensemble(icao, lat, lon, cfg)
         if ensemble_result:
             results[icao]["ensemble"] = ensemble_result
@@ -478,212 +455,53 @@ async def _fetch_noaa(station: str, lat: float, lon: float,
 
     return None
 
-# ---------------------------------------------------------------------------
-# Tomorrow.io fetch (500 free/day)
-# ---------------------------------------------------------------------------
-async def _fetch_tomorrow_io(station: str, lat: float, lon: float,
-                              station_cfg: dict) -> Optional[ModelForecast]:
-    """Fetch from Tomorrow.io weather API."""
-    api_key = os.environ.get("TOMORROWIO_API_KEY")
-    if not api_key:
-        _rate_limit_status["tomorrow_io"] = "no_key"
-        return None
 
-    try:
-        params = {
-            "location": f"{lat},{lon}",
-            "apikey": api_key,
-            "timesteps": "1d",
-            "units": "metric",
-        }
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                TOMORROW_IO_URL, params=params,
-                headers={"User-Agent": USER_AGENT},
-                timeout=aiohttp.ClientTimeout(total=10),
-            ) as resp:
-                if resp.status == 429:
-                    _rate_limit_status["tomorrow_io"] = "limited"
-                    logger.warning("Tomorrow.io rate limit reached")
-                    return None
-                if resp.status != 200:
-                    msg = f"Tomorrow.io HTTP {resp.status} for {station}"
-                    if resp.status == 401:
-                        logger.warning("%s (Check API Key)", msg)
-                    else:
-                        logger.error(msg)
-                    return None
-                data = await resp.json()
-
-        _rate_limit_status["tomorrow_io"] = "ok"
-
-        # Parse daily data
-        timelines = data.get("timelines", {}).get("daily", [])
-        if not timelines:
-            return None
-
-        # Use tomorrow's forecast (index 1) or today (index 0)
-        day = timelines[1] if len(timelines) > 1 else timelines[0]
-        values = day.get("values", {})
-        raw_high_c = float(values.get("temperatureMax", 0))
-        raw_high_f = raw_high_c * 9.0 / 5.0 + 32.0
-
-        target_date_str = day.get("time", "")[:10]
-        try:
-            target_date = date.fromisoformat(target_date_str)
-        except ValueError:
-            tz_name = station_cfg.get("timezone", "UTC")
-            target_date = datetime.now(pytz.timezone(tz_name)).date()
-
-        bias_c = await _get_bias(station, "tomorrow_io", station_cfg)
-        corrected_c = raw_high_c - bias_c
-        corrected_f = corrected_c * 9.0 / 5.0 + 32.0
-        weight = await _get_weight(station, "tomorrow_io")
-
-        forecast = ModelForecast(
-            station=station, model_name="tomorrow_io",
-            target_date=target_date,
-            raw_high_c=raw_high_c, raw_high_f=raw_high_f,
-            bias_corrected_c=corrected_c, bias_corrected_f=corrected_f,
-            weight=weight,
-        )
-        await tracker.store_forecast(
-            station, target_date, "tomorrow_io",
-            raw_high_c, raw_high_f, corrected_c, corrected_f,
-        )
-        return forecast
-
-    except Exception as e:
-        logger.error("Tomorrow.io error for %s: %s", station, e)
-        return None
 
 
 # ---------------------------------------------------------------------------
-# OpenWeather fetch (1000 free/day)
-# ---------------------------------------------------------------------------
-async def _fetch_openweather(station: str, lat: float, lon: float,
-                              station_cfg: dict) -> Optional[ModelForecast]:
-    """Fetch from OpenWeather OneCall API."""
-    api_key = os.environ.get("OPENWEATHER_API_KEY")
-    if not api_key:
-        _rate_limit_status["openweather"] = "no_key"
-        return None
-
-    try:
-        params = {
-            "lat": lat, "lon": lon,
-            "appid": api_key,
-            "units": "metric",
-            "exclude": "minutely,hourly,alerts",
-        }
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                OPENWEATHER_URL, params=params,
-                headers={"User-Agent": USER_AGENT},
-                timeout=aiohttp.ClientTimeout(total=10),
-            ) as resp:
-                if resp.status == 429:
-                    _rate_limit_status["openweather"] = "limited"
-                    logger.warning("OpenWeather rate limit reached")
-                    return None
-                if resp.status != 200:
-                    msg = f"OpenWeather HTTP {resp.status} for {station}"
-                    if resp.status == 401:
-                        logger.warning("%s (Check API Key)", msg)
-                    else:
-                        logger.error(msg)
-                    return None
-                data = await resp.json()
-
-        _rate_limit_status["openweather"] = "ok"
-
-        daily = data.get("daily", [])
-        if len(daily) < 2:
-            return None
-
-        day = daily[1]  # Tomorrow (which tends to align with local "today" for OpenWeather's cutoff if fetched at night, but safer to pin to local target)
-        raw_high_c = float(day.get("temp", {}).get("max", 0))
-        raw_high_f = raw_high_c * 9.0 / 5.0 + 32.0
-        
-        tz_name = station_cfg.get("timezone", "UTC")
-        target_date = datetime.now(pytz.timezone(tz_name)).date()
-
-        bias_c = await _get_bias(station, "openweather", station_cfg)
-        corrected_c = raw_high_c - bias_c
-        corrected_f = corrected_c * 9.0 / 5.0 + 32.0
-        weight = await _get_weight(station, "openweather")
-
-        forecast = ModelForecast(
-            station=station, model_name="openweather",
-            target_date=target_date,
-            raw_high_c=raw_high_c, raw_high_f=raw_high_f,
-            bias_corrected_c=corrected_c, bias_corrected_f=corrected_f,
-            weight=weight,
-        )
-        await tracker.store_forecast(
-            station, target_date, "openweather",
-            raw_high_c, raw_high_f, corrected_c, corrected_f,
-        )
-        return forecast
-
-    except Exception as e:
-        logger.error("OpenWeather error for %s: %s", station, e)
-        return None
-
-
-# ---------------------------------------------------------------------------
-# Visual Crossing fetch (1000 free/day)
+# Visual Crossing fetch (requires key)
 # ---------------------------------------------------------------------------
 async def _fetch_visual_crossing(station: str, lat: float, lon: float,
-                                  station_cfg: dict) -> Optional[ModelForecast]:
-    """Fetch from Visual Crossing Timeline API."""
+                                 station_cfg: dict) -> Optional[ModelForecast]:
+    """Fetch daily high from Visual Crossing API."""
+    import os
     api_key = os.environ.get("VISUAL_CROSSING_API_KEY")
     if not api_key:
-        _rate_limit_status["visual_crossing"] = "no_key"
         return None
 
-    unit_group = "metric" if station_cfg.get("unit", "C") == "C" else "us"
-
     try:
-        url = f"{VISUAL_CROSSING_URL}/{lat},{lon}/next2days"
+        url = f"https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline/{lat},{lon}/today"
         params = {
-            "unitGroup": unit_group,
-            "key": api_key,
+            "unitGroup": "us", # always fetch F
             "include": "days",
-            "contentType": "json",
+            "key": api_key,
+            "contentType": "json"
         }
+        
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, params=params, timeout=15) as resp:
-                if resp.status == 429:
-                    _rate_limit_status["visual_crossing"] = "limited"
-                    logger.warning("Visual Crossing rate limit hit")
-                    return None
+            async with session.get(
+                url, params=params,
+                headers={"User-Agent": USER_AGENT},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
                 if resp.status != 200:
-                    logger.error("Visual Crossing HTTP %d", resp.status)
+                    logger.debug("Visual Crossing HTTP %d for %s", resp.status, station)
                     return None
                 data = await resp.json()
-
-        _rate_limit_status["visual_crossing"] = "ok"
 
         days = data.get("days", [])
         if not days:
             return None
+            
+        raw_high_f = float(days[0].get("tempmax"))
+        raw_high_c = (raw_high_f - 32.0) * 5.0 / 9.0
 
-        # Use today's forecast (index 0) or tomorrow (index 1)
-        # We'll use index 1 for Tomorrow's forecast just like others if possible, but let's stick to the user's logic exactly or close.
-        # Wait, the user's prompt used target_day = days[0]. Let's match their logic exactly.
-        target_day = days[0]
-        raw_high_c = float(target_day.get("tempmax", 0))
-        if unit_group == "us":
-            raw_high_f = raw_high_c
-            raw_high_c = (raw_high_f - 32) * 5 / 9
-        else:
-            raw_high_f = raw_high_c * 9 / 5 + 32
+        tz_name = station_cfg.get("timezone", "UTC")
+        target_date = datetime.now(pytz.timezone(tz_name)).date()
 
-        target_date = date.fromisoformat(target_day["datetime"])
         bias_c = await _get_bias(station, "visual_crossing", station_cfg)
         corrected_c = raw_high_c - bias_c
-        corrected_f = corrected_c * 9 / 5 + 32
+        corrected_f = corrected_c * 9.0 / 5.0 + 32.0
         weight = await _get_weight(station, "visual_crossing")
 
         forecast = ModelForecast(
@@ -700,92 +518,7 @@ async def _fetch_visual_crossing(station: str, lat: float, lon: float,
         return forecast
 
     except Exception as e:
-        logger.error("Visual Crossing error: %s", e)
-        return None
-
-
-# ---------------------------------------------------------------------------
-# Weatherbit fetch (50 free/day — strict limit)
-# ---------------------------------------------------------------------------
-async def _fetch_weatherbit(station: str, lat: float, lon: float,
-                             station_cfg: dict) -> Optional[ModelForecast]:
-    """Fetch from Weatherbit daily forecast. Tracks call count."""
-    global _weatherbit_calls_today, _weatherbit_reset_date
-
-    api_key = os.environ.get("WEATHERBIT_API_KEY")
-    if not api_key:
-        _rate_limit_status["weatherbit"] = "no_key"
-        return None
-
-    # Reset daily counter
-    today = date.today()
-    if _weatherbit_reset_date != today:
-        _weatherbit_calls_today = 0
-        _weatherbit_reset_date = today
-
-    if _weatherbit_calls_today >= 45:  # Buffer of 5 from 50 limit
-        _rate_limit_status["weatherbit"] = "limited"
-        logger.debug("Weatherbit daily limit approaching (%d/50)", _weatherbit_calls_today)
-        return None
-
-    try:
-        params = {
-            "lat": lat, "lon": lon,
-            "key": api_key,
-            "days": 2,
-        }
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                WEATHERBIT_URL, params=params,
-                headers={"User-Agent": USER_AGENT},
-                timeout=aiohttp.ClientTimeout(total=10),
-            ) as resp:
-                _weatherbit_calls_today += 1
-                if resp.status == 429:
-                    _rate_limit_status["weatherbit"] = "limited"
-                    logger.warning("Weatherbit rate limit reached")
-                    return None
-                if resp.status != 200:
-                    logger.warning("Weatherbit HTTP %d for %s", resp.status, station)
-                    return None
-                data = await resp.json()
-
-        _rate_limit_status["weatherbit"] = "ok"
-
-        days = data.get("data", [])
-        if len(days) < 2:
-            return None
-
-        day = days[1]  # Tomorrow
-        raw_high_c = float(day.get("max_temp", 0))
-        raw_high_f = raw_high_c * 9.0 / 5.0 + 32.0
-
-        date_str = day.get("datetime", "")
-        try:
-            target_date = date.fromisoformat(date_str)
-        except ValueError:
-            target_date = date.today() + timedelta(days=1)
-
-        bias_c = await _get_bias(station, "weatherbit", station_cfg)
-        corrected_c = raw_high_c - bias_c
-        corrected_f = corrected_c * 9.0 / 5.0 + 32.0
-        weight = await _get_weight(station, "weatherbit")
-
-        forecast = ModelForecast(
-            station=station, model_name="weatherbit",
-            target_date=target_date,
-            raw_high_c=raw_high_c, raw_high_f=raw_high_f,
-            bias_corrected_c=corrected_c, bias_corrected_f=corrected_f,
-            weight=weight,
-        )
-        await tracker.store_forecast(
-            station, target_date, "weatherbit",
-            raw_high_c, raw_high_f, corrected_c, corrected_f,
-        )
-        return forecast
-
-    except Exception as e:
-        logger.error("Weatherbit error for %s: %s", station, e)
+        logger.error("Visual Crossing error for %s: %s", station, e)
         return None
 
 
@@ -1146,102 +879,59 @@ async def get_latest_from_db(stations_cfg: dict) -> Dict[str, Dict[str, ModelFor
     return results
 
 # ---------------------------------------------------------------------------
-# Confluence logic
+# Daily High Prediction (3-step Bayesian Blend)
 # ---------------------------------------------------------------------------
-def get_model_confluence(models_data: Dict[str, ModelForecast], unit: str = "F") -> str:
-    """Generate a confluence report card for all available models."""
-    if not models_data:
-        return ""
+async def calculate_daily_high(models_data: Dict[str, ModelForecast], metar: Optional[Any], local_hour: int, station: str, unit: str = "C") -> float:
+    """
+    3-step Bayesian prediction:
+    Step 1: Inverse-MAE weighted average of all models
+    Step 2: METAR floor (can't be lower than already observed)
+    Step 3: Time-of-day blend (morning = models, afternoon = METAR)
+    """
 
-    model_list = []
-    temps = []
-    for model_name, forecast in models_data.items():
-        if unit.upper() == "F":
-            t = forecast.bias_corrected_f
-        else:
-            t = forecast.bias_corrected_c
-        
-        display_name = model_name.upper()
-        if display_name == "TOMORROWIO": display_name = "Tomorrow.io"
-        if display_name == "OPENWEATHER": display_name = "OpenWeather"
-        
-        temps.append(t)
-        model_list.append(f"{display_name} {t:.0f}°{unit}")
+    # Default MAE per model (lower = more accurate = higher weight)
+    DEFAULT_MAE = {
+        "gfs": 1.8, "ecmwf": 1.5, "icon": 2.0, "gem": 2.2, "jma": 2.0,
+        "nws": 1.5, "noaa_mos": 1.3, "visual_crossing": 2.0,
+    }
+
+    # Step 1: Inverse-MAE weighted average
+    weights = {}
+    temps = {}
+    for name, forecast in models_data.items():
+        temp = forecast.bias_corrected_c if unit == "C" else forecast.bias_corrected_f
+        if temp is None or temp == 0:
+            continue
+        mae = DEFAULT_MAE.get(name, 2.0)
+        weights[name] = 1.0 / max(0.5, mae)
+        temps[name] = temp
 
     if not temps:
-        return ""
+        return 0.0
 
-    avg_temp = sum(temps) / len(temps)
-    models_str = " | ".join(model_list)
-    
-    return f"🌡️ Models ({len(temps)} sources):\n{models_str}\nConsensus: {avg_temp:.1f}°{unit}"
+    total_w = sum(weights.values())
+    model_pred = sum(temps[n] * (weights[n] / total_w) for n in temps)
 
-# ---------------------------------------------------------------------------
-# Bayesian Daily High Prediction
-# ---------------------------------------------------------------------------
-async def calculate_daily_high_prediction(
-    models_data: Dict[str, ModelForecast],
-    metar: Optional[Any],
-    local_hour: int,
-    station: str,
-    unit: str = "C"
-) -> float:
-    """
-    Bayesian update of the daily high.
-    Prior = Weighted Model Consensus
-    Data = METAR high so far.
-    If local_hour is late, Prior matters less.
-    """
-    import datetime
+    # Step 2: METAR floor
+    current_high = None
+    if metar and hasattr(metar, 'velocity') and metar.velocity:
+        current_high = metar.velocity.day_high if unit == "C" else metar.velocity.day_high_f
+        model_pred = max(model_pred, current_high)
 
-    # 1. Base Model Consensus (Prior)
-    if not models_data:
-        prior_mean = 0.0
+    # Step 3: Time-of-day blend
+    # Before noon local → models dominate (0.0-0.3 blend)
+    # After 2PM local → METAR dominates (0.7-1.0 blend)
+    if local_hour < 8:
+        blend_weight = 0.0
+    elif local_hour < 14:
+        blend_weight = (local_hour - 8) / 12.0  # 0.0 at 8AM, 0.5 at 14
     else:
-        temps = [
-            (f.bias_corrected_c if unit == "C" else f.bias_corrected_f) * f.weight
-            for f in models_data.values()
-        ]
-        sum_weights = sum(f.weight for f in models_data.values())
-        prior_mean = sum(temps) / sum_weights if sum_weights > 0 else 0.0
+        blend_weight = 0.5 + (local_hour - 14) / 12.0  # 0.5 at 14, ~0.83 at 18
+    blend_weight = max(0.0, min(1.0, blend_weight))
 
-    if not metar or not metar.velocity:
-        return prior_mean
-
-    metar_high = metar.velocity.day_high if unit == "C" else metar.velocity.day_high_f
-
-    # If METAR already exceeded models, models are blown.
-    if metar_high > prior_mean:
-        return metar_high
-
-    # Load historical time-of-high
-    month = datetime.datetime.now().month
-    toh_stats = await tracker.get_time_of_high(station, month)
-
-    # Calculate Probability(High happens AFTER current hour)
-    prob_after_now = 0.0
-    total_samples = 0
-    if toh_stats:
-        for row in toh_stats:
-            samples = row["sample_count"]
-            total_samples += samples
-            if row["hour_local"] > local_hour:
-                prob_after_now += samples
-
-    if total_samples > 10:
-        p_remaining = prob_after_now / total_samples
+    if current_high is not None:
+        final = (1 - blend_weight) * model_pred + blend_weight * current_high
     else:
-        # Fallback heuristic: assume high is around 15:00 local
-        if local_hour < 11: p_remaining = 0.9
-        elif local_hour < 13: p_remaining = 0.6
-        elif local_hour < 15: p_remaining = 0.3
-        elif local_hour < 17: p_remaining = 0.1
-        else: p_remaining = 0.0
+        final = model_pred
 
-    # Bayesian update:
-    # Prediction = METAR_High + (Prior - METAR_High) * P(remaining)
-    # The later it is, the less room there is to reach the prior if we are far below it.
-    prediction = metar_high + (prior_mean - metar_high) * p_remaining
-
-    # Floor it at the actual observed high
-    return max(prediction, metar_high)
+    return round(final, 1)

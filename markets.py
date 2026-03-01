@@ -23,67 +23,11 @@ GAMMA_API_URL = "https://gamma-api.polymarket.com/events"
 GAMMA_EVENT_SLUG_URL = "https://gamma-api.polymarket.com/events/slug"
 USER_AGENT = "WeatherEdgeBot/1.0"
 
-# Known city → ICAO mappings (from resolution rules research)
-CITY_TO_STATION = {
-    "seoul": "RKSI",
-    "incheon": "RKSI",
-    "new york": "KLGA",
-    "new york city": "KLGA",
-    "nyc": "KLGA",
-    "miami": "KMIA",
-    "chicago": "KORD",
-    "london": "EGLC",
-    "ankara": "LTAC",
-    "buenos aires": "SAEZ",
-    "dallas": "KDFW",
-    "atlanta": "KATL",
-    "seattle": "KSEA",
-    "wellington": "NZWN",
-    "toronto": "CYYZ",
-    "paris": "LFPG",
-}
-
-# City slug names used in Polymarket URLs
-# Format: "highest-temperature-in-{slug_city}-on-{month}-{day}-{year}"
-CITY_SLUG_NAMES = {
-    "RKSI": "seoul",
-    "KLGA": "nyc",
-    "KMIA": "miami",
-    "KORD": "chicago",
-    "EGLC": "london",
-    "LTAC": "ankara",
-    "SAEZ": "buenos-aires",
-    "KDFW": "dallas",
-    "KATL": "atlanta",
-    "KSEA": "seattle",
-    "NZWN": "wellington",
-    "CYYZ": "toronto",
-    "LFPG": "paris",
-}
-
-# Friendly city names for display
-STATION_CITY_NAMES = {
-    "RKSI": "Seoul",
-    "KLGA": "NYC",
-    "KMIA": "Miami",
-    "KORD": "Chicago",
-    "EGLC": "London",
-    "LTAC": "Ankara",
-    "SAEZ": "Buenos Aires",
-    "KDFW": "Dallas",
-    "KATL": "Atlanta",
-    "KSEA": "Seattle",
-    "NZWN": "Wellington",
-    "CYYZ": "Toronto",
-    "LFPG": "Paris",
-}
-
 MONTH_NAMES = {
     1: "january", 2: "february", 3: "march", 4: "april",
     5: "may", 6: "june", 7: "july", 8: "august",
     9: "september", 10: "october", 11: "november", 12: "december",
 }
-
 
 # ---------------------------------------------------------------------------
 # Data models
@@ -96,7 +40,6 @@ class BinInfo:
     unit: str
     is_edge: bool = False
 
-
 @dataclass
 class MarketBin:
     market_id: str
@@ -107,7 +50,6 @@ class MarketBin:
     liquidity_usd: float = 0.0
     polymarket_url: str = ""
 
-
 @dataclass
 class MarketGroup:
     station: str
@@ -117,176 +59,69 @@ class MarketGroup:
     event_id: str = ""
     resolution_source: str = ""
 
+# ---------------------------------------------------------------------------
+# City Configuration & Routing
+# ---------------------------------------------------------------------------
+CITIES = {
+    # US Cities (10)
+    "nyc": {"icao": "KLGA", "city": "New York", "slug": "new-york-city", "lat": 40.7772, "lon": -73.8726, "tz": "America/New_York", "unit": "F", "is_coastal": True},
+    "chi": {"icao": "KORD", "city": "Chicago", "slug": "chicago", "lat": 41.9742, "lon": -87.9073, "tz": "America/Chicago", "unit": "F", "is_coastal": False},
+    "mia": {"icao": "KMIA", "city": "Miami", "slug": "miami", "lat": 25.7959, "lon": -80.2870, "tz": "America/New_York", "unit": "F", "is_coastal": True},
+    "atl": {"icao": "KATL", "city": "Atlanta", "slug": "atlanta", "lat": 33.6407, "lon": -84.4277, "tz": "America/New_York", "unit": "F", "is_coastal": False},
+    "den": {"icao": "KDEN", "city": "Denver", "slug": "denver", "lat": 39.8561, "lon": -104.6737, "tz": "America/Denver", "unit": "F", "is_coastal": False},
+    "hou": {"icao": "KIAH", "city": "Houston", "slug": "houston", "lat": 29.9902, "lon": -95.3368, "tz": "America/Chicago", "unit": "F", "is_coastal": True},
+    "phx": {"icao": "KPHX", "city": "Phoenix", "slug": "phoenix", "lat": 33.4373, "lon": -112.0078, "tz": "America/Phoenix", "unit": "F", "is_coastal": False},
+    "dal": {"icao": "KDFW", "city": "Dallas", "slug": "dallas", "lat": 32.8998, "lon": -97.0403, "tz": "America/Chicago", "unit": "F", "is_coastal": False},
+    "sea": {"icao": "KSEA", "city": "Seattle", "slug": "seattle", "lat": 47.4502, "lon": -122.3088, "tz": "America/Los_Angeles", "unit": "F", "is_coastal": True},
+    "bos": {"icao": "KBOS", "city": "Boston", "slug": "boston", "lat": 42.3656, "lon": -71.0096, "tz": "America/New_York", "unit": "F", "is_coastal": True},
 
-# ---------------------------------------------------------------------------
-# City Mapping and Auto-Discovery
-# ---------------------------------------------------------------------------
-CITY_ICAO_MAP = {
-    "seoul": "RKSI",
-    "london": "EGLC",
-    "new york": "KLGA",
-    "chicago": "KORD",
-    "miami": "KMIA",
-    "los angeles": "KLAX",
-    "tokyo": "RJTT",
-    "paris": "LFPG",
-    "dubai": "OMDB",
-    "sydney": "YSSY",
-    "hong kong": "VHHH",
-    "singapore": "WSSS",
-    "toronto": "CYYZ",
-    "delhi": "VIDP",
-    "mumbai": "VABB",
-    "sao paulo": "SBGR",
-    "mexico city": "MMMX",
-    "berlin": "EDDB",
-    "rome": "LIRF",
-    "amsterdam": "EHAM",
-    "beijing": "ZBAA",
-    "shanghai": "ZSPD",
-    "bangkok": "VTBS",
-    "jakarta": "WIII",
-    "cairo": "HECA",
-    "johannesburg": "FAOR",
-    "nairobi": "HKJK",
-    "buenos aires": "SABE",
-    "denver": "KDEN",
-    "atlanta": "KATL",
-    "houston": "KIAH",
-    "phoenix": "KPHX",
-    "san francisco": "KSFO",
-    "washington": "KDCA",
-    "boston": "KBOS",
-    "seattle": "KSEA",
-    "dallas": "KDFW",
+    # International Cities (5)
+    "sel": {"icao": "RKSI", "city": "Seoul", "slug": "seoul", "lat": 37.4692, "lon": 126.4505, "tz": "Asia/Seoul", "unit": "C", "is_coastal": True},
+    "lon": {"icao": "EGLC", "city": "London", "slug": "london", "lat": 51.5053, "lon": 0.0553, "tz": "Europe/London", "unit": "C", "is_coastal": False},
+    "tok": {"icao": "RJTT", "city": "Tokyo", "slug": "tokyo", "lat": 35.5494, "lon": 139.7798, "tz": "Asia/Tokyo", "unit": "C", "is_coastal": True},
+    "par": {"icao": "LFPG", "city": "Paris", "slug": "paris", "lat": 49.0097, "lon": 2.5479, "tz": "Europe/Paris", "unit": "C", "is_coastal": False},
+    "syd": {"icao": "YSSY", "city": "Sydney", "slug": "sydney", "lat": -33.9461, "lon": 151.1772, "tz": "Australia/Sydney", "unit": "C", "is_coastal": True},
 }
 
-# Reverse lookup: ICAO → city info (lat, lon, timezone, unit)
-ICAO_INFO = {
-    "RKSI": {"city": "Seoul", "lat": 37.4692, "lon": 126.4505, "timezone": "Asia/Seoul", "unit": "C", "country": "KR", "is_coastal": True, "models": ["gfs", "ecmwf", "icon", "gem", "jma"]},
-    "EGLC": {"city": "London", "lat": 51.5053, "lon": 0.0553, "timezone": "Europe/London", "unit": "C", "country": "GB", "is_coastal": False, "models": ["gfs", "ecmwf", "icon", "gem"]},
-    "KLGA": {"city": "New York", "lat": 40.7772, "lon": -73.8726, "timezone": "America/New_York", "unit": "F", "country": "US", "is_coastal": True, "models": ["gfs", "ecmwf", "icon", "gem", "nws", "noaa"]},
-    "KORD": {"city": "Chicago", "lat": 41.9742, "lon": -87.9073, "timezone": "America/Chicago", "unit": "F", "country": "US", "is_coastal": False, "models": ["gfs", "ecmwf", "icon", "gem", "nws", "noaa"]},
-    "KMIA": {"city": "Miami", "lat": 25.7959, "lon": -80.2870, "timezone": "America/New_York", "unit": "F", "country": "US", "is_coastal": True, "models": ["gfs", "ecmwf", "icon", "gem", "nws", "noaa"]},
-    "KLAX": {"city": "Los Angeles", "lat": 33.9425, "lon": -118.4081, "timezone": "America/Los_Angeles", "unit": "F", "country": "US", "is_coastal": True, "models": ["gfs", "ecmwf", "icon", "gem", "nws", "noaa"]},
-    "RJTT": {"city": "Tokyo", "lat": 35.5494, "lon": 139.7798, "timezone": "Asia/Tokyo", "unit": "C", "country": "JP", "is_coastal": True, "models": ["gfs", "ecmwf", "icon", "gem", "jma"]},
-    "LFPG": {"city": "Paris", "lat": 49.0097, "lon": 2.5479, "timezone": "Europe/Paris", "unit": "C", "country": "FR", "is_coastal": False, "models": ["gfs", "ecmwf", "icon", "gem"]},
-    "OMDB": {"city": "Dubai", "lat": 25.2532, "lon": 55.3657, "timezone": "Asia/Dubai", "unit": "C", "country": "AE", "is_coastal": True, "models": ["gfs", "ecmwf", "icon", "gem"]},
-    "KATL": {"city": "Atlanta", "lat": 33.6407, "lon": -84.4277, "timezone": "America/New_York", "unit": "F", "country": "US", "is_coastal": False, "models": ["gfs", "ecmwf", "icon", "gem", "nws", "noaa"]},
-    # Additional generic mappings could be defined here
-}
+def _city_key_to_icao(city_key: str) -> Optional[str]:
+    """Return ICAO for a given /city_key (e.g. mia -> KMIA)."""
+    return CITIES.get(city_key.lower(), {}).get("icao")
 
-def _city_to_icao(city_name: str) -> Optional[str]:
-    """Convert city name to ICAO code. Returns None if unknown."""
-    return CITY_ICAO_MAP.get(city_name.lower().strip())
-
-async def discover_temperature_markets() -> Dict[str, dict]:
+async def fetch_city_market(city_key: str, target_date: date) -> Optional[MarketGroup]:
     """
-    Scan Polymarket Gamma API for ALL active 'highest temperature' events.
-    Returns dict of discovered stations with lat/lon/timezone/unit.
+    Fetch the Polymarket event for a specific city on a specific date using its exact URL slug.
+    Returns the loaded MarketGroup or None if no market exists.
     """
-    discovered = {}
-    try:
-        async with aiohttp.ClientSession() as session:
-            # Search for temperature events
-            params = {"active": "true", "limit": 100, "order": "startDate"}
-            async with session.get(
-                GAMMA_API_URL, params=params,
-                headers={"User-Agent": USER_AGENT}, timeout=15
-            ) as resp:
-                if resp.status != 200:
-                    logger.error("Gamma discovery HTTP %d", resp.status)
-                    return discovered
-                events = await resp.json()
-
-        for event in events:
-            title = event.get("title", "").lower()
-            # Match "highest temperature in {city} on {date}" pattern
-            if "highest temperature" not in title:
-                continue
-
-            slug = event.get("slug", "")
-            event_id = event.get("id", "")
-
-            # Extract city name from title
-            match = re.search(r"highest temperature in (.+?) on (.+)", title, re.IGNORECASE)
-            if not match:
-                continue
-
-            city_name = match.group(1).strip()
-            date_str = match.group(2).strip()
-
-            # Map city to ICAO code
-            icao = _city_to_icao(city_name)
-            if not icao:
-                logger.info(f"Discovered unknown city: {city_name} — skipping (add to mapping)")
-                continue
-
-            discovered[icao] = {
-                "city": city_name,
-                "event_id": event_id,
-                "slug": slug,
-                "date_str": date_str,
-            }
-            logger.info(f"🔍 Discovered market: {city_name} ({icao}) — {date_str}")
-
-    except Exception as e:
-        logger.error("Market discovery error: %s", e)
-
-    logger.info(f"📊 Discovered {len(discovered)} temperature markets")
-    return discovered
-
-# ---------------------------------------------------------------------------
-# Fetch active weather markets — Auto-discovery
-# ---------------------------------------------------------------------------
-async def fetch_active_weather_markets(known_stations: List[str] = None
-                                        ) -> Dict[str, MarketGroup]:
-    """
-    Fetch all events dynamically and discover temperature markets.
-    Returns: {station_date_key: MarketGroup}
-    """
-    import os
-    results: Dict[str, MarketGroup] = {}
+    city_config = CITIES.get(city_key.lower())
+    if not city_config:
+        return None
+        
+    slug_city = city_config["slug"]
+    month_name = MONTH_NAMES.get(target_date.month, "")
+    day = target_date.day
+    year = target_date.year
+    
+    slug = f"highest-temperature-in-{slug_city}-on-{month_name}-{day}-{year}"
     
     try:
+        url = f"{GAMMA_EVENT_SLUG_URL}/{slug}"
         async with aiohttp.ClientSession() as session:
-            for offset in range(0, 1000, 100):
-                url = f"{GAMMA_API_URL}?tag=weather&active=true&closed=false&limit=100&offset={offset}"
-                try:
-                    async with session.get(
-                        url, headers={"User-Agent": USER_AGENT}, timeout=aiohttp.ClientTimeout(total=20)
-                    ) as resp:
-                        if resp.status != 200:
-                            break
-                        events = await resp.json()
-                        if not events:
-                            break
-                        
-                        found_any_temperature = False
-                        for event in events:
-                            title = event.get("title", "").lower()
-                            if "highest temperature" in title:
-                                found_any_temperature = True
-                                group = await _parse_event_async(event)
-                                if group and group.bins and group.station != "UNKNOWN":
-                                    key = f"{group.station}_{group.target_date.isoformat()}"
-                                    results[key] = group
-                                    logger.info(
-                                        "Found market: %s %s — %d bins",
-                                        group.station, group.target_date, len(group.bins),
-                                    )
-                        
-                        # Optimization: if we found weather events but none of them are temperature,
-                        # and we have enough, we could break. But we will just loop for safety.
-                except Exception as loop_e:
-                    logger.warning("Gamma chunk fetch timeout for offset %d", offset)
-                    continue
-
+            async with session.get(url, headers={"User-Agent": USER_AGENT}, timeout=15) as resp:
+                if resp.status == 404:
+                    return None
+                if resp.status != 200:
+                    logger.error("Gamma API error for %s: HTTP %d", slug, resp.status)
+                    return None
+                    
+                event = await resp.json()
+                if not event:
+                    return None
+                    
+                return await _parse_event_async(event, station=city_config["icao"], friendly_city=city_config["city"], target_date=target_date)
+                
     except Exception as e:
-        import traceback
-        logger.error("Gamma dynamic fetch error: %s\n%s", e, traceback.format_exc())
-
-    return results
+        logger.error("Error fetching market slug %s: %s", slug, e)
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -294,25 +129,11 @@ def is_valid_price(price: float, liquidity: float = 0.0) -> bool:
     """Return True if price >= 0.01 and liquidity >= $5.00."""
     return price >= 0.01 and liquidity >= 5.0
 
-async def _parse_event_async(event: dict, station: str = None) -> Optional[MarketGroup]:
-    """Parse a Gamma API event into a MarketGroup and natively auto-discover cities."""
+async def _parse_event_async(event: dict, station: str, friendly_city: str, target_date: date) -> Optional[MarketGroup]:
+    """Parse a Gamma API event into a MarketGroup."""
     title = event.get("title", "")
     if not title:
         return None
-
-    # Extract city and date from title
-    city, target_date = _parse_title(title)
-    if not target_date or not city:
-        return None
-
-    # Use known city name if station provided
-    if not station:
-        station = _city_to_icao(city)
-        if not station:
-            return None
-
-    # Use known city name if station provided
-    friendly_city = STATION_CITY_NAMES.get(station, city.title())
 
     # Parse resolution source from description
     description = event.get("description", "")
@@ -350,71 +171,7 @@ async def _parse_event_async(event: dict, station: str = None) -> Optional[Marke
     return group
 
 
-def _parse_title(title: str) -> Tuple[Optional[str], Optional[date]]:
-    """
-    Parse city and date from event title.
-    Examples:
-    - "Highest temperature in Seoul on Feb 28"
-    - "What will the high temperature be in New York City on March 1, 2026?"
-    - "London daily high temperature on 2026-02-28"
-    """
-    title_lower = title.lower()
 
-    # Extract city: look for "in <city>" pattern
-    city = None
-    city_match = re.search(r"in\s+([A-Za-z\s]+?)(?:\s+on\s+|\s+(?:for|–|-))", title, re.IGNORECASE)
-    if city_match:
-        city = city_match.group(1).strip()
-    else:
-        # Try known city names directly
-        for known_city in CITY_TO_STATION:
-            if known_city in title_lower:
-                city = known_city.title()
-                break
-
-    # Extract date
-    target_date = None
-    # Try explicit date patterns
-    date_match = re.search(
-        r"(?:on|for)\s+(.+?)(?:\?|$)",
-        title, re.IGNORECASE
-    )
-    if date_match:
-        date_str = date_match.group(1).strip().rstrip("?")
-        try:
-            parsed = dateparser.parse(date_str, fuzzy=True)
-            if parsed:
-                target_date = parsed.date()
-        except (ValueError, TypeError):
-            pass
-
-    # Fallback: look for ISO date in title
-    if not target_date:
-        iso_match = re.search(r"(\d{4}-\d{2}-\d{2})", title)
-        if iso_match:
-            try:
-                target_date = date.fromisoformat(iso_match.group(1))
-            except ValueError:
-                pass
-
-    # Fallback: look for Month Day format
-    if not target_date:
-        month_match = re.search(
-            r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+(\d{1,2})",
-            title, re.IGNORECASE,
-        )
-        if month_match:
-            try:
-                parsed = dateparser.parse(
-                    f"{month_match.group(1)} {month_match.group(2)}, {date.today().year}",
-                    fuzzy=True,
-                )
-                if parsed:
-                    target_date = parsed.date()
-            except (ValueError, TypeError):
-                pass
-
-    return city, target_date
 
 
 def _parse_resolution_source(description: str) -> str:
@@ -572,35 +329,4 @@ def parse_bin_from_title(title: str, unit: str = "F") -> Optional[BinInfo]:
     return None
 
 
-# ---------------------------------------------------------------------------
-# City → Station mapping
-# ---------------------------------------------------------------------------
-def map_city_to_station(city: str) -> str:
-    """Map city name from Polymarket to ICAO code."""
-    if not city:
-        return "UNKNOWN"
-    city_lower = city.lower().strip()
-    # Direct match
-    if city_lower in CITY_TO_STATION:
-        return CITY_TO_STATION[city_lower]
-    # Partial match
-    for known, icao in CITY_TO_STATION.items():
-        if known in city_lower or city_lower in known:
-            return icao
-    return "UNKNOWN"
 
-
-# ---------------------------------------------------------------------------
-# New city detection
-# ---------------------------------------------------------------------------
-def detect_new_cities(events: list, known_stations: List[str]) -> List[str]:
-    """Find cities in events that aren't in our station registry."""
-    new_cities = []
-    for event in events:
-        title = event.get("title", "")
-        city, _ = _parse_title(title)
-        if city:
-            station = map_city_to_station(city)
-            if station == "UNKNOWN" or station not in known_stations:
-                new_cities.append(city)
-    return list(set(new_cities))

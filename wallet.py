@@ -357,30 +357,14 @@ async def _db_fallback_sync() -> WalletState:
 # ---------------------------------------------------------------------------
 # Helpers — parse position data
 # ---------------------------------------------------------------------------
-_SLUG_TO_STATION = {
-    "seoul": "RKSI",
-    "nyc": "KLGA",
-    "new-york": "KLGA",
-    "miami": "KMIA",
-    "chicago": "KORD",
-    "london": "EGLC",
-    "ankara": "LTAC",
-    "buenos-aires": "SAEZ",
-    "dallas": "KDFW",
-    "atlanta": "KATL",
-    "seattle": "KSEA",
-    "wellington": "NZWN",
-    "toronto": "CYYZ",
-    "paris": "LFPG",
-}
-
+import markets
 
 def _extract_station_from_slug(event_slug: str) -> str:
     """Extract ICAO station from event slug like 'highest-temperature-in-nyc-on-...'"""
     slug_lower = event_slug.lower()
-    for city_slug, icao in _SLUG_TO_STATION.items():
-        if city_slug in slug_lower:
-            return icao
+    for city_key, city_info in markets.CITIES.items():
+        if city_info["slug"] in slug_lower:
+            return city_info["icao"]
     return "UNKNOWN"
 
 
@@ -460,3 +444,12 @@ def calculate_fill_price(order_book: OrderBook, desired_shares: float,
         fillable_shares=round(filled, 2),
         slippage=round(abs(avg_price - best_price), 4),
     )
+
+async def get_capital_summary() -> dict:
+    """Helper method to return basic capital overview without position details."""
+    state = await sync()
+    return {
+        "balance": state.balance,
+        "total_value": state.total_value,
+        "source": state.source
+    }

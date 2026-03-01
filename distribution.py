@@ -7,171 +7,74 @@ With ensemble data: counts members per bin for non-parametric distribution.
 """
 
 import logging
+import logging
+import math
 from datetime import date
 from typing import Dict, List, Optional, Tuple
 
-import numpy as np
-from scipy.stats import norm
-
-import tracker
-from models import DEFAULT_MAE, ModelForecast
+from models import ModelForecast
 
 logger = logging.getLogger("distribution")
 
 
-def build_bin_distribution(
-    forecasts: Dict[str, ModelForecast],
-    bins: list,
-    unit: str = "F",
-    ensemble_members: Optional[List[float]] = None,
-) -> Dict[str, float]:
+def calculate_bin_probabilities(models_data: Dict[str, ModelForecast], bins: list, unit: str = "C") -> Dict[str, float]:
     """
-    Build probability distribution across bins.
-
-    For each model:
-      1. Get bias-corrected forecast temp
-      2. Get model MAE (from tracker or DEFAULT_MAE)
-      3. Create N(forecast, MAE)
-      4. For each bin [low, high): P(bin) = CDF(high) - CDF(low)
-    Then weight-average across models.
-
-    With ensemble data: count how many of 31 members fall in each bin.
-
-    Args:
-        forecasts: {model_name: ModelForecast}
-        bins: list of MarketBin objects with .bin.low, .bin.high, .bin.label
-        unit: "F" or "C"
-        ensemble_members: Optional list of 31 GFS member temps
-
-    Returns:
-        {bin_label: probability} — sums to ~1.0
+    For each bin, calculate the probability that the actual temp falls in it.
+    Uses normal distribution per model, weighted by inverse-MAE.
     """
-    if not bins or not forecasts:
-        return {}
+    DEFAULT_MAE = {
+        "gfs": 1.8, "ecmwf": 1.5, "icon": 2.0, "gem": 2.2, "jma": 2.0,
+        "nws": 1.5, "noaa_mos": 1.3, "visual_crossing": 2.0,
+    }
 
-    # Extract bin edges
-    bin_edges = []
-    for b in bins:
-        low = b.bin.low if hasattr(b, 'bin') else b.get("bin_low")
-        high = b.bin.high if hasattr(b, 'bin') else b.get("bin_high")
-        label = b.bin.label if hasattr(b, 'bin') else b.get("bin_label", "")
-        bin_edges.append((low, high, label))
+    def norm_cdf(z):
+        return 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
 
-    if not bin_edges:
-        return {}
+    # Collect forecasts and weights
+    forecasts = []  # list of (temp, weight, mae)
+    for name, forecast in models_data.items():
+        temp = forecast.bias_corrected_c if unit == "C" else forecast.bias_corrected_f
+        if temp is None or temp == 0:
+            continue
+        mae = DEFAULT_MAE.get(name, 2.0)
+        weight = 1.0 / max(0.5, mae)
+        forecasts.append((temp, weight, mae))
 
-    # --- Ensemble path: non-parametric ---
-    if ensemble_members and len(ensemble_members) >= 10:
-        probs = _ensemble_distribution(ensemble_members, bin_edges)
-        # Blend with model-based if we have both
-        model_probs = _model_distribution(forecasts, bin_edges, unit)
-        if model_probs:
-            # 60% ensemble, 40% model-based
-            for label in probs:
-                if label in model_probs:
-                    probs[label] = 0.6 * probs[label] + 0.4 * model_probs[label]
-        return probs
-
-    # --- Standard path: normal distributions ---
-    return _model_distribution(forecasts, bin_edges, unit)
-
-
-def _model_distribution(
-    forecasts: Dict[str, ModelForecast],
-    bin_edges: List[Tuple],
-    unit: str,
-) -> Dict[str, float]:
-    """Normal distribution approach per model, then weight-average."""
     if not forecasts:
         return {}
 
-    # Collect per-model bin probabilities
-    all_model_probs: Dict[str, Dict[str, float]] = {}
-    model_weights: Dict[str, float] = {}
+    total_weight = sum(w for _, w, _ in forecasts)
 
-    for model_name, forecast in forecasts.items():
-        # Get forecast temp in the right unit
-        if unit.upper() == "F":
-            temp = forecast.bias_corrected_f
-        else:
-            temp = forecast.bias_corrected_c
+    # For each bin, sum weighted probabilities from each model
+    bin_probs = {}
+    for mbin in bins:
+        bin_low = mbin.bin.low if hasattr(mbin, 'bin') else mbin.get('low', 0)
+        bin_high = mbin.bin.high if hasattr(mbin, 'bin') else mbin.get('high', 0)
+        bin_label = mbin.bin.label if hasattr(mbin, 'bin') else mbin.get('label', '')
 
-        # Get MAE for this model (from DB or default)
-        mae = DEFAULT_MAE.get(model_name, 2.0)
-        # Convert MAE to same unit as bins
-        if unit.upper() == "F" and model_name in DEFAULT_MAE:
-            mae = mae * 9.0 / 5.0  # Convert °C MAE to °F
-
-        # Build normal distribution
-        sigma = max(0.5, mae)
-        probs = {}
-        for low, high, label in bin_edges:
-            if low is None and high is not None:
-                # Edge bin: "X or below"
-                p = norm.cdf(high, loc=temp, scale=sigma)
-            elif high is None and low is not None:
-                # Edge bin: "X or above"
-                p = 1.0 - norm.cdf(low, loc=temp, scale=sigma)
-            elif low is not None and high is not None:
-                p = norm.cdf(high, loc=temp, scale=sigma) - norm.cdf(low, loc=temp, scale=sigma)
+        prob = 0.0
+        for temp, weight, mae in forecasts:
+            std_dev = mae  # Use MAE as standard deviation
+            
+            # Handle open-ended bins
+            if bin_low is None and bin_high is not None:
+                z_high = (bin_high - temp) / std_dev
+                model_prob = norm_cdf(z_high)
+            elif bin_high is None and bin_low is not None:
+                z_low = (bin_low - temp) / std_dev
+                model_prob = 1.0 - norm_cdf(z_low)
+            elif bin_low is not None and bin_high is not None:
+                z_low = (bin_low - temp) / std_dev
+                z_high = (bin_high - temp) / std_dev
+                model_prob = norm_cdf(z_high) - norm_cdf(z_low)
             else:
-                p = 0.0
-            probs[label] = max(0.001, p)  # Floor at 0.1%
+                model_prob = 0.0
+                
+            prob += (weight / total_weight) * model_prob
 
-        all_model_probs[model_name] = probs
-        model_weights[model_name] = forecast.weight
+        bin_probs[bin_label] = round(prob, 4)
 
-    # Normalize weights
-    total_weight = sum(model_weights.values())
-    if total_weight == 0:
-        total_weight = len(model_weights)
-        model_weights = {m: 1.0 for m in model_weights}
-
-    # Weight-average across models
-    combined: Dict[str, float] = {}
-    for low, high, label in bin_edges:
-        weighted_sum = 0.0
-        for model_name, probs in all_model_probs.items():
-            w = model_weights[model_name] / total_weight
-            weighted_sum += w * probs.get(label, 0.001)
-        combined[label] = weighted_sum
-
-    # Normalize to sum to ~1.0
-    total = sum(combined.values())
-    if total > 0:
-        combined = {k: v / total for k, v in combined.items()}
-
-    return combined
-
-
-def _ensemble_distribution(
-    members: List[float],
-    bin_edges: List[Tuple],
-) -> Dict[str, float]:
-    """Count ensemble members per bin for non-parametric distribution."""
-    n = len(members)
-    probs = {}
-
-    for low, high, label in bin_edges:
-        count = 0
-        for temp in members:
-            if low is None and high is not None:
-                if temp <= high:
-                    count += 1
-            elif high is None and low is not None:
-                if temp >= low:
-                    count += 1
-            elif low is not None and high is not None:
-                if low <= temp < high:
-                    count += 1
-        probs[label] = max(0.001, count / n)
-
-    # Normalize
-    total = sum(probs.values())
-    if total > 0:
-        probs = {k: v / total for k, v in probs.items()}
-
-    return probs
+    return bin_probs
 
 
 def format_distribution_text(

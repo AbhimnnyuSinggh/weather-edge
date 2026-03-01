@@ -48,18 +48,27 @@ def is_paused() -> bool:
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Welcome message when user first starts the bot."""
     msg = (
-        "🌤️ Weather-Edge Bot\n\n"
-        "I monitor Polymarket weather temperature markets and "
-        "send you trading signals based on METAR data, model forecasts, "
-        "and probability analysis.\n\n"
-        "Commands:\n"
-        "/status — Current wallet & positions\n"
-        "/stations — Active stations with METAR\n"
-        "/today — Today's trades\n"
-        "/help — All commands\n\n"
-        "Bot is running. Signals will appear here automatically."
+        "🌤 **WEATHER-EDGE DASHBOARD**\n"
+        "Select a city to scan for Polymarket edge:\n\n"
+        "🇺🇸 **US CITIES** (F)\n"
+        "/nyc - New York\n"
+        "/chi - Chicago\n"
+        "/mia - Miami\n"
+        "/atl - Atlanta\n"
+        "/den - Denver\n"
+        "/hou - Houston\n"
+        "/phx - Phoenix\n"
+        "/dal - Dallas\n"
+        "/sea - Seattle\n"
+        "/bos - Boston\n\n"
+        "🌍 **INTL CITIES** (C)\n"
+        "/sel - Seoul\n"
+        "/lon - London\n"
+        "/tok - Tokyo\n"
+        "/par - Paris\n"
+        "/syd - Sydney"
     )
-    await update.message.reply_text(msg)
+    await update.message.reply_text(msg, parse_mode="Markdown")
 
 
 async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -339,152 +348,184 @@ async def cmd_resolve(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ---------------------------------------------------------------------------
 # /temp — Live Temperature Dashboard
 # ---------------------------------------------------------------------------
-async def cmd_temp(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+async def cmd_city_analysis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """
-    /temp — Show live temperature dashboard for all Polymarket cities.
-    Fetches METAR + all 11 models + calculates Bayesian predicted daily high.
+    Handle /<city> commands (e.g., /mia).
+    Fetches live data and returns a full trading dashboard.
     """
-    await update.message.reply_text("🔄 Scanning all markets and fetching temperatures...")
+    # 1. Parse which city the user requested
+    text = update.message.text or ""
+    cmd = text.split()[0].replace("/", "").lower()
+    
+    city_config = markets.CITIES.get(cmd)
+    if not city_config:
+        await update.message.reply_text(f"❌ Unknown city command: /{cmd}")
+        return
+        
+    icao = city_config["icao"]
+    city_name = city_config["city"]
+    unit = city_config["unit"]
+    tz_name = city_config["tz"]
 
-    config = _get_config()
-    stations_cfg = config.get("stations", {})
+    await update.message.reply_text(f"🔄 Scanning Polymarket and models for {city_name}...")
 
-    # Step 1: Discover all active markets
     try:
-        discovered = await markets.discover_temperature_markets()
-        for icao, info in discovered.items():
-            if icao not in stations_cfg:
-                station_info = markets.ICAO_INFO.get(icao)
-                if station_info:
-                    stations_cfg[icao] = station_info
-    except Exception as e:
-        logger.error("Discovery error in /temp: %s", e)
+        # Determine target date (tomorrow, or today depending on resolution rules)
+        # PolyWeather typically targets Tomorrow based on exchange rules, but for simplicity we'll assume next resolution day.
+        # Let's get "today" in local timezone
+        local_tz = pytz.timezone(tz_name)
+        now_local = datetime.now(local_tz)
+        target_date = now_local.date()
+        
+        # 2. Fetch Active Market
+        market_group = await markets.fetch_city_market(cmd, target_date)
+        if not market_group or not market_group.bins:
+            # If nothing found for today, try tomorrow
+            import datetime as dt
+            target_date = target_date + dt.timedelta(days=1)
+            market_group = await markets.fetch_city_market(cmd, target_date)
+            
+        market_link = "No Active Market"
+        if market_group and market_group.bins:
+            market_link = f"[{city_name} Polymarket]({market_group.bins[0].polymarket_url})"
 
-    station_ids = list(stations_cfg.keys())
+        # 3. Fetch METAR
+        raw_metar = await metar_mod.fetch_all_stations([icao])
+        station_metar = None
+        now_temp_str = f"—°{unit}"
+        high_so_far_str = ""
+        high_so_far_val = None
+        
+        if icao in raw_metar:
+            station_metar = await metar_mod.enrich_metar(raw_metar[icao], tz_name, unit)
+            if station_metar:
+                now_t = station_metar.temp_c if unit == "C" else station_metar.temp_f
+                now_temp_str = f"{now_t:.0f}°{unit}"
+                if station_metar.velocity:
+                    high_so_far_val = station_metar.velocity.day_high if unit == "C" else station_metar.velocity.day_high_f
+                    high_so_far_str = f" / High so far: {high_so_far_val:.0f}°{unit}"
 
-    # Step 2: Fetch METAR for all stations
-    metar_data = {}
-    try:
-        raw_metar = await metar_mod.fetch_all_stations(station_ids)
-        for icao, m in raw_metar.items():
-            cfg = stations_cfg.get(icao, {})
-            metar_data[icao] = await metar_mod.enrich_metar(
-                m, cfg.get("timezone", "UTC"), cfg.get("unit", "C")
-            )
-    except Exception as e:
-        logger.error("METAR fetch error in /temp: %s", e)
+        # 4. Fetch All Models
+        stations_cfg = {icao: city_config}
+        model_data_raw = await models_mod.fetch_all_stations(stations_cfg)
+        models_data = model_data_raw.get(icao, {})
 
-    # Step 3: Fetch model forecasts for all stations
-    try:
-        model_data = await models_mod.fetch_all_stations(stations_cfg)
-    except Exception as e:
-        logger.error("Models fetch error in /temp: %s", e)
-        model_data = {}
-
-    # Step 4: Build output
-    ist = pytz.timezone("Asia/Kolkata")
-    now_ist = datetime.now(ist).strftime("%I:%M %p IST")
-
-    header = (
-        f"🌡️ LIVE TEMPERATURE DASHBOARD | {now_ist}\n\n"
-        f"Models: GFS | ECMWF | ICON | GEM | JMA | TIO | OWM | WBit | NWS | MOS | VC\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-    )
-
-    MODEL_ORDER = ["gfs", "ecmwf", "icon", "gem", "jma",
-                   "tomorrow_io", "openweather", "weatherbit",
-                   "nws", "noaa_mos", "visual_crossing"]
-    MODEL_ABBREV = {
-        "gfs": "GFS", "ecmwf": "ECMWF", "icon": "ICON",
-        "gem": "GEM", "jma": "JMA",
-        "tomorrow_io": "TIO", "openweather": "OWM", "weatherbit": "WBit",
-        "nws": "NWS", "noaa_mos": "MOS", "visual_crossing": "VC",
-    }
-
-    lines = []
-    city_num = 0
-
-    for icao, cfg in stations_cfg.items():
-        city_num += 1
-        city = cfg.get("city", icao)
-        unit = cfg.get("unit", "C")
-        station_models = model_data.get(icao, {})
-        station_metar = metar_data.get(icao)
-
-        # Current temp from METAR
-        if station_metar:
-            now_temp = f"{station_metar.temp_c:.0f}°C" if unit == "C" else f"{station_metar.temp_f:.0f}°F"
-            if station_metar.velocity:
-                high_so_far = station_metar.velocity.day_high if unit == "C" else station_metar.velocity.day_high_f
-                high_str = f" | METAR High so far: {high_so_far:.0f}°{unit}"
+        # 5. Format Model Forecasts block
+        MODEL_ORDER = ["gfs", "ecmwf", "icon", "gem", "jma", "nws", "noaa_mos", "visual_crossing"]
+        ABBR = {
+            "gfs": "GFS", "ecmwf": "ECMWF", "icon": "ICON", "gem": "GEM", 
+            "jma": "JMA", "nws": "NWS", "noaa_mos": "MOS", "visual_crossing": "VC"
+        }
+        
+        model_strings = []
+        for mn in MODEL_ORDER:
+            fc = models_data.get(mn)
+            if fc:
+                t = fc.bias_corrected_c if unit == "C" else fc.bias_corrected_f
+                model_strings.append(f"{ABBR[mn]}: {t:.0f}°")
             else:
-                high_so_far = None
-                high_str = ""
-        else:
-            now_temp = "—"
-            high_so_far = None
-            high_str = ""
+                model_strings.append(f"{ABBR[mn]}: —")
+                
+        row1 = " | ".join(model_strings[:4])
+        row2 = " | ".join(model_strings[4:])
 
-        # Model temps row 1 & 2
-        row1_parts = []
-        row2_parts = []
-        available_count = 0
+        m_high_str = f"{high_so_far_val:.0f}°{unit}" if high_so_far_val else "—"
 
-        for i, model_name in enumerate(MODEL_ORDER):
-            abbrev = MODEL_ABBREV[model_name]
-            forecast = station_models.get(model_name)
-            if forecast:
-                temp = forecast.bias_corrected_c if unit == "C" else forecast.bias_corrected_f
-                temp_str = f"{abbrev}: {temp:.0f}°{unit}"
-                available_count += 1
-            else:
-                temp_str = f"{abbrev}: —"
-
-            if i < 5:
-                row1_parts.append(temp_str)
-            else:
-                row2_parts.append(temp_str)
-
-        row1 = "   " + " | ".join(row1_parts)
-        row2 = "   " + " | ".join(row2_parts)
-
-        # Bayesian predicted daily high
-        predicted_high = 0.0
-        if hasattr(models_mod, "calculate_daily_high_prediction"):
-            predicted_high = await models_mod.calculate_daily_high_prediction(
-                station_models, station_metar,
-                datetime.now(pytz.timezone(cfg["timezone"])).hour,
-                icao, unit
-            )
-
-        # METAR > models warning
-        warning = ""
-        if high_so_far and predicted_high and high_so_far > predicted_high + 1:
-            warning = f"\n   ⚠️ METAR already {high_so_far:.0f}°{unit} > models say {predicted_high:.0f}°{unit} — models may be wrong!"
-
-        city_block = (
-            f"\n{city_num}. {city} ({icao}) — Now: {now_temp}{high_str}\n"
-            f"{row1}\n{row2}\n"
-            f"   ✅ {available_count}/11 models\n"
-            f"   📈 Predicted Daily High: {predicted_high:.1f}°{unit}{warning}"
+        # 6. Calculate Predicted Daily High
+        predicted_high = await models_mod.calculate_daily_high(
+            models_data, station_metar, now_local.hour, icao, unit
         )
-        lines.append(city_block)
+        
+        m_high_floor = "No"
+        if high_so_far_val and predicted_high == high_so_far_val:
+            m_high_floor = "Yes"
 
-    total_cities = city_num
-    footer = (
-        f"\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📊 {total_cities} cities | 11 models | ⏰ {now_ist}"
-    )
+        # 7. Distribution / Edge Scan
+        import distribution
+        
+        dashboard_msg = [
+            f"🌡️ **{city_name} ({icao}) — Live Status**",
+            f"   Time: {now_local.strftime('%I:%M %p %Z')}",
+            f"   METAR: {now_temp_str}{high_so_far_str}",
+            f"   Market: {market_link}\n",
+            f"🔄 **Active Market Scan ({target_date.strftime('%b %-d')})**"
+        ]
 
-    full_msg = header + "\n".join(lines) + footer
+        if not market_group or not market_group.bins:
+            dashboard_msg.append("   ⚠️ No active market found on Polymarket.\n")
+            edge_scan_lines = ["   No market data to scan."]
+            market_bins = []
+        else:
+            bin_strs = []
+            market_bins = market_group.bins
+            for b in market_bins:
+                bin_strs.append(f"{b.bin.label} ({b.yes_price*100:.0f}¢)")
+            
+            # chunk bins to display cleanly
+            if len(bin_strs) <= 3:
+                dashboard_msg.append("   " + " | ".join(bin_strs) + "\n")
+            else:
+                dashboard_msg.append("   " + " | ".join(bin_strs[:3]))
+                dashboard_msg.append("   " + " | ".join(bin_strs[3:]) + "\n")
 
-    # Telegram has 4096 char limit
-    if len(full_msg) > 4000:
-        chunks = [full_msg[i:i+4000] for i in range(0, len(full_msg), 4000)]
-        for chunk in chunks:
-            await update.message.reply_text(chunk)
-    else:
-        await update.message.reply_text(full_msg)
+            # Edge Scan logic
+            probs = distribution.calculate_bin_probabilities(models_data, market_bins, unit)
+            edge_scan_lines = []
+            for b in market_bins:
+                lbl = b.bin.label
+                model_pct = probs.get(lbl, 0)
+                mkt_pct = b.yes_price
+                edge = model_pct - mkt_pct
+                if edge > 0.05 or mkt_pct >= 0.10: # Only show significant bins
+                    edge_str = f"{edge*100:+.1f}%"
+                    edge_scan_lines.append(f"   {lbl}: Model {model_pct*100:.1f}% - Market {mkt_pct*100:.0f}% = Edge {edge_str}")
+        
+        dashboard_msg.extend([
+            f"📊 **Model Forecasts (Unit: {unit})**",
+            f"   METAR: {now_temp_str.replace('°'+unit,'')} | M-High: {m_high_str.replace('°'+unit,'')}",
+            f"   {row1}",
+            f"   {row2}\n",
+            f"📈 **Predicted Daily High**",
+            f"   Bayesian Blend: {predicted_high:.1f}°{unit} (M-High Floor: {m_high_floor})\n",
+            f"🎯 **Edge Scan**"
+        ])
+        dashboard_msg.extend(edge_scan_lines)
+
+        # 8. Signals & Trades
+        import signals
+        dashboard_msg.append(f"\n💡 **Recommended Trades (Total TVL: $[Cap] Placeholder)**")
+        if market_group and market_group.bins:
+            # We need wallet TVL
+            ws = await wallet_mod.get_capital_summary()
+            total_cap = ws["total_value"]
+            dashboard_msg[-1] = f"💡 **Recommended Trades (Total TVL: ${total_cap:.0f})**"
+            trade_instructions, _, _ = signals.analyze_market(market_group, probs, total_cap)
+            if not trade_instructions:
+                dashboard_msg.append("   No trades meet the EV / edge threshold.")
+            else:
+                for t in trade_instructions:
+                    dashboard_msg.append(f"   {t}")
+        else:
+            dashboard_msg.append("   No trades: No market.")
+
+        # 9. Risk Notes
+        dashboard_msg.append(f"\n⚠️ **Risk Notes**")
+        if city_config["is_coastal"]:
+            dashboard_msg.append("   1. Coastal City - Sea breeze / Humidity volatility.")
+        else:
+            dashboard_msg.append("   1. Inland City - Diurnal variation.")
+            
+        if high_so_far_val and high_so_far_val > predicted_high + 1:
+            dashboard_msg.append(f"   2. METAR already {high_so_far_val:.0f}°{unit}, crushing model forecasts.")
+        else:
+            dashboard_msg.append("   2. METAR behaving as models expect.")
+
+        # Send full dashboard
+        await update.message.reply_text("\n".join(dashboard_msg), parse_mode="Markdown")
+
+    except Exception as e:
+        logger.error("/%s error: %s", cmd, e)
+        await update.message.reply_text(f"❌ Error generating dashboard: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -504,7 +545,9 @@ def register_handlers(app: Application):
     app.add_handler(CommandHandler("setcapital", cmd_setcapital))
     app.add_handler(CommandHandler("took", cmd_took))
     app.add_handler(CommandHandler("resolve", cmd_resolve))
-    app.add_handler(CommandHandler("temp", cmd_temp))
+    # Register 15 City Commands
+    for city_cmd in markets.CITIES.keys():
+        app.add_handler(CommandHandler(city_cmd, cmd_city_analysis))
     logger.info("Telegram command handlers registered")
 
 
