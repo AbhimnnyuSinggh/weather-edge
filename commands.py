@@ -406,6 +406,7 @@ async def cmd_city_analysis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     high_so_far_str = f" / High so far: {high_so_far_val:.0f}°{unit}"
 
         # 4. Fetch All Models
+        city_config["target_date"] = target_date
         stations_cfg = {icao: city_config}
         model_data_raw = await models_mod.fetch_all_stations(stations_cfg)
         models_data = model_data_raw.get(icao, {})

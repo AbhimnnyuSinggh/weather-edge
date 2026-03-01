@@ -262,12 +262,16 @@ async def _fetch_open_meteo(station: str, lat: float, lon: float,
             )
             
             # Prioritize today's forecast, but allow tomorrow's if today's is missing (useful for Asian markets at night UTC)
-            if model_key not in results or target_date in (today_local, tomorrow_local):
-                # If we already have a forecast and it's for today, don't overwrite it with tomorrow
-                if model_key in results and results[model_key].target_date == today_local and target_date == tomorrow_local:
-                    pass
-                else:
+            if station_cfg.get("target_date"): # Check if the function was called with a specific target_date
+                if target_date == station_cfg["target_date"]: # Only append if the current forecast date matches the requested date
                     results[model_key] = forecast
+            else: # Fallback to old logic if no specific target_date was requested
+                if model_key not in results or target_date in (today_local, tomorrow_local):
+                    # If we already have a forecast and it's for today, don't overwrite it with tomorrow
+                    if model_key in results and results[model_key].target_date == today_local and target_date == tomorrow_local:
+                        pass
+                    else:
+                        results[model_key] = forecast
 
             # Store in database (protected against missing stations by try/except inside store_forecast)
             await tracker.store_forecast(
