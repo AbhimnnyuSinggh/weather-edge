@@ -529,7 +529,7 @@ async def _fetch_noaa_mos(station: str,
     Only available for US stations.
     """
     try:
-        params = {"ids": station, "type": "mav"}
+        params = {"station": station, "type": "met"}
         async with aiohttp.ClientSession() as session:
             async with session.get(
                 NOAA_MOS_URL, params=params,
