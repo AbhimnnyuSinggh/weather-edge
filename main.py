@@ -118,7 +118,8 @@ async def startup(config: dict):
     logger.info("Database connected")
 
     # 2. Stations
-    stations_cfg = config.get("stations", {})
+    import markets
+    stations_cfg = {city_cfg["icao"]: city_cfg for city_slug, city_cfg in markets.CITIES.items()}
     await tracker.init_stations(stations_cfg)
 
     # 2b. Initialize wallet with config capital
@@ -161,7 +162,8 @@ async def startup(config: dict):
 async def main_loop(config: dict):
     """The forever-running scan cycle."""
     tg_app = await startup(config)
-    stations_cfg = config.get("stations", {})
+    import markets
+    stations_cfg = {city_cfg["icao"]: city_cfg for _, city_cfg in markets.CITIES.items()}
     station_ids = list(stations_cfg.keys())
 
     # Deduplication cache: {signal_key: timestamp_sent}
