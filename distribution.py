@@ -17,10 +17,11 @@ from models import ModelForecast
 logger = logging.getLogger("distribution")
 
 
-def calculate_bin_probabilities(models_data: Dict[str, ModelForecast], bins: list, unit: str = "C") -> Dict[str, float]:
+def calculate_bin_probabilities(models_data: Dict[str, ModelForecast], bins: list, predicted_high: float, metar_high: Optional[float], unit: str = "C") -> Dict[str, float]:
     """
     For each bin, calculate the probability that the actual temp falls in it.
-    Uses normal distribution per model, weighted by inverse-MAE.
+    Uses normal distribution centered on the Bayesian predicted_high per model weight.
+    Zeros out any bins physically impossible based on live METAR readings.
     """
     # Calibrated MAE to Std Dev mapping (tighter curves = stronger edge detection)
     DEFAULT_MAE = {
@@ -58,24 +59,33 @@ def calculate_bin_probabilities(models_data: Dict[str, ModelForecast], bins: lis
         bin_high = mbin.bin.high if hasattr(mbin, 'bin') else mbin.get('high', 0)
         bin_label = mbin.bin.label if hasattr(mbin, 'bin') else mbin.get('label', '')
 
+        # METAR Floor Constraint: If the entire bin is below what the temperature already hit...
+        if metar_high is not None and bin_high is not None and bin_high < metar_high:
+            bin_probs[bin_label] = 0.0
+            continue
+
         prob = 0.0
         for temp, weight, mae in forecasts:
-            std_dev = max(0.4, mae * 0.35)  # Tighten standard deviation for steeper peaks
+            std_dev = max(0.4, mae * 0.35)  # Tight curves for steeper peaks
             
+            # Key Change: Center the Z-score calculation directly on the Bayesian Predicted High!
+            center_temp = predicted_high if predicted_high and predicted_high > 0 else temp
+
             # Handle open-ended bins
             if bin_low is None and bin_high is not None:
-                z_high = (bin_high - temp) / std_dev
+                z_high = (bin_high - center_temp) / std_dev
                 model_prob = norm_cdf(z_high)
             elif bin_high is None and bin_low is not None:
-                z_low = (bin_low - temp) / std_dev
+                z_low = (bin_low - center_temp) / std_dev
                 model_prob = 1.0 - norm_cdf(z_low)
             elif bin_low is not None and bin_high is not None:
-                z_low = (bin_low - temp) / std_dev
-                z_high = (bin_high - temp) / std_dev
+                z_low = (bin_low - center_temp) / std_dev
+                z_high = (bin_high - center_temp) / std_dev
                 model_prob = norm_cdf(z_high) - norm_cdf(z_low)
+            else:
                 model_prob = 0.0
                 
-            prob += (weight / total_weight) * model_prob
+            prob += model_prob * (weight / total_weight)
 
         bin_probs[bin_label] = prob
 

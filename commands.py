@@ -442,10 +442,15 @@ async def cmd_city_analysis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             m_high_floor = "Yes"
 
         # 7. Distribution / Edge Scan
-        # 7. Distribution / Edge Scan
         import distribution
         import signals
-        probs = distribution.calculate_bin_probabilities(models_data, market_group.bins if market_group else [], unit)
+        probs = distribution.calculate_bin_probabilities(
+            models_data, 
+            market_group.bins if market_group else [], 
+            predicted_high, 
+            high_so_far_val, 
+            unit
+        )
         
         # 8. Signals & Trades
         ws = await wallet_mod.get_capital_summary()
