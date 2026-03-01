@@ -405,11 +405,10 @@ async def cmd_city_analysis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     high_so_far_val = station_metar.velocity.day_high if unit == "C" else station_metar.velocity.day_high_f
                     high_so_far_str = f" / High so far: {high_so_far_val:.0f}°{unit}"
 
-        # 4. Fetch All Models
+        # 4. Fetch All Models from Local Database Cache (Bypassing Open-Meteo HTTP 429 bans)
+        import tracker
         city_config["target_date"] = target_date
-        stations_cfg = {icao: city_config}
-        model_data_raw = await models_mod.fetch_all_stations(stations_cfg)
-        models_data = model_data_raw.get(icao, {})
+        models_data = await tracker.get_latest_forecasts(icao)
 
         # 5. Format Model Forecasts block
         MODEL_ORDER = ["gfs", "ecmwf", "icon", "gem", "jma", "nws", "noaa_mos", "visual_crossing"]
