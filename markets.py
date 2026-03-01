@@ -64,23 +64,23 @@ class MarketGroup:
 # ---------------------------------------------------------------------------
 CITIES = {
     # US Cities (10)
-    "nyc": {"icao": "KLGA", "city": "New York", "slug": "new-york-city", "lat": 40.7772, "lon": -73.8726, "tz": "America/New_York", "unit": "F", "is_coastal": True},
-    "chi": {"icao": "KORD", "city": "Chicago", "slug": "chicago", "lat": 41.9742, "lon": -87.9073, "tz": "America/Chicago", "unit": "F", "is_coastal": False},
-    "mia": {"icao": "KMIA", "city": "Miami", "slug": "miami", "lat": 25.7959, "lon": -80.2870, "tz": "America/New_York", "unit": "F", "is_coastal": True},
-    "atl": {"icao": "KATL", "city": "Atlanta", "slug": "atlanta", "lat": 33.6407, "lon": -84.4277, "tz": "America/New_York", "unit": "F", "is_coastal": False},
-    "den": {"icao": "KDEN", "city": "Denver", "slug": "denver", "lat": 39.8561, "lon": -104.6737, "tz": "America/Denver", "unit": "F", "is_coastal": False},
-    "hou": {"icao": "KIAH", "city": "Houston", "slug": "houston", "lat": 29.9902, "lon": -95.3368, "tz": "America/Chicago", "unit": "F", "is_coastal": True},
-    "phx": {"icao": "KPHX", "city": "Phoenix", "slug": "phoenix", "lat": 33.4373, "lon": -112.0078, "tz": "America/Phoenix", "unit": "F", "is_coastal": False},
-    "dal": {"icao": "KDFW", "city": "Dallas", "slug": "dallas", "lat": 32.8998, "lon": -97.0403, "tz": "America/Chicago", "unit": "F", "is_coastal": False},
-    "sea": {"icao": "KSEA", "city": "Seattle", "slug": "seattle", "lat": 47.4502, "lon": -122.3088, "tz": "America/Los_Angeles", "unit": "F", "is_coastal": True},
-    "bos": {"icao": "KBOS", "city": "Boston", "slug": "boston", "lat": 42.3656, "lon": -71.0096, "tz": "America/New_York", "unit": "F", "is_coastal": True},
+    "nyc": {"icao": "KLGA", "city": "New York", "slug": "nyc", "lat": 40.7772, "lon": -73.8726, "tz": "America/New_York", "unit": "F", "is_coastal": True, "country": "US"},
+    "chi": {"icao": "KORD", "city": "Chicago", "slug": "chicago", "lat": 41.9742, "lon": -87.9073, "tz": "America/Chicago", "unit": "F", "is_coastal": False, "country": "US"},
+    "mia": {"icao": "KMIA", "city": "Miami", "slug": "miami", "lat": 25.7959, "lon": -80.2870, "tz": "America/New_York", "unit": "F", "is_coastal": True, "country": "US"},
+    "atl": {"icao": "KATL", "city": "Atlanta", "slug": "atlanta", "lat": 33.6407, "lon": -84.4277, "tz": "America/New_York", "unit": "F", "is_coastal": False, "country": "US"},
+    "den": {"icao": "KDEN", "city": "Denver", "slug": "denver", "lat": 39.8561, "lon": -104.6737, "tz": "America/Denver", "unit": "F", "is_coastal": False, "country": "US"},
+    "hou": {"icao": "KIAH", "city": "Houston", "slug": "houston", "lat": 29.9902, "lon": -95.3368, "tz": "America/Chicago", "unit": "F", "is_coastal": True, "country": "US"},
+    "phx": {"icao": "KPHX", "city": "Phoenix", "slug": "phoenix", "lat": 33.4373, "lon": -112.0078, "tz": "America/Phoenix", "unit": "F", "is_coastal": False, "country": "US"},
+    "dal": {"icao": "KDFW", "city": "Dallas", "slug": "dallas", "lat": 32.8998, "lon": -97.0403, "tz": "America/Chicago", "unit": "F", "is_coastal": False, "country": "US"},
+    "sea": {"icao": "KSEA", "city": "Seattle", "slug": "seattle", "lat": 47.4502, "lon": -122.3088, "tz": "America/Los_Angeles", "unit": "F", "is_coastal": True, "country": "US"},
+    "bos": {"icao": "KBOS", "city": "Boston", "slug": "boston", "lat": 42.3656, "lon": -71.0096, "tz": "America/New_York", "unit": "F", "is_coastal": True, "country": "US"},
 
     # International Cities (5)
-    "sel": {"icao": "RKSI", "city": "Seoul", "slug": "seoul", "lat": 37.4692, "lon": 126.4505, "tz": "Asia/Seoul", "unit": "C", "is_coastal": True},
-    "lon": {"icao": "EGLC", "city": "London", "slug": "london", "lat": 51.5053, "lon": 0.0553, "tz": "Europe/London", "unit": "C", "is_coastal": False},
-    "tok": {"icao": "RJTT", "city": "Tokyo", "slug": "tokyo", "lat": 35.5494, "lon": 139.7798, "tz": "Asia/Tokyo", "unit": "C", "is_coastal": True},
-    "par": {"icao": "LFPG", "city": "Paris", "slug": "paris", "lat": 49.0097, "lon": 2.5479, "tz": "Europe/Paris", "unit": "C", "is_coastal": False},
-    "syd": {"icao": "YSSY", "city": "Sydney", "slug": "sydney", "lat": -33.9461, "lon": 151.1772, "tz": "Australia/Sydney", "unit": "C", "is_coastal": True},
+    "sel": {"icao": "RKSI", "city": "Seoul", "slug": "seoul", "lat": 37.4692, "lon": 126.4505, "tz": "Asia/Seoul", "unit": "C", "is_coastal": True, "country": "KR"},
+    "lon": {"icao": "EGLC", "city": "London", "slug": "london", "lat": 51.5053, "lon": 0.0553, "tz": "Europe/London", "unit": "C", "is_coastal": False, "country": "UK"},
+    "tok": {"icao": "RJTT", "city": "Tokyo", "slug": "tokyo", "lat": 35.5494, "lon": 139.7798, "tz": "Asia/Tokyo", "unit": "C", "is_coastal": True, "country": "JP"},
+    "par": {"icao": "LFPG", "city": "Paris", "slug": "paris", "lat": 49.0097, "lon": 2.5479, "tz": "Europe/Paris", "unit": "C", "is_coastal": False, "country": "FR"},
+    "syd": {"icao": "YSSY", "city": "Sydney", "slug": "sydney", "lat": -33.9461, "lon": 151.1772, "tz": "Australia/Sydney", "unit": "C", "is_coastal": True, "country": "AU"},
 }
 
 def _city_key_to_icao(city_key: str) -> Optional[str]:

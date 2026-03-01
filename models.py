@@ -94,7 +94,7 @@ async def fetch_all_stations(stations_cfg: dict) -> Dict[str, Dict[str, ModelFor
 
     for icao, cfg in stations_cfg.items():
         results[icao] = {}
-        model_list = cfg.get("models", ["gfs", "ecmwf", "icon"])
+        model_list = cfg.get("models", ["gfs", "ecmwf", "icon", "gem", "jma"])
         lat, lon = cfg["lat"], cfg["lon"]
 
         # 1) Open-Meteo deterministic (GFS, ECMWF, ICON, GEM, JMA)
@@ -108,10 +108,6 @@ async def fetch_all_stations(stations_cfg: dict) -> Dict[str, Dict[str, ModelFor
             nws_result = await _fetch_nws(icao, lat, lon, cfg)
             if nws_result:
                 results[icao]["nws"] = nws_result
-
-            noaa_result = await _fetch_noaa(icao, lat, lon, cfg)
-            if noaa_result:
-                results[icao]["noaa"] = noaa_result
 
         # 3) Visual Crossing
         if _rate_limit_status.get("visual_crossing") != "limited":
