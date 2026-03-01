@@ -983,3 +983,44 @@ async def get_active_stations() -> List[asyncpg.Record]:
     pool = await get_pool()
     async with pool.acquire() as conn:
         return await conn.fetch("SELECT * FROM stations WHERE active=TRUE")
+
+
+# ---------------------------------------------------------------------------
+# Historical Bias Tracking
+# ---------------------------------------------------------------------------
+async def record_bias(station: str, model_name: str, target_date: date, predicted_c: float, actual_c: float):
+    """Save the bias for today so tomorrow we can subtract it."""
+    pool = await get_pool()
+    bias = predicted_c - actual_c
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO model_bias (station, model_name, target_date, predicted_high_c, actual_high_c, bias_c)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            ON CONFLICT (station, model_name, target_date) DO UPDATE SET
+                predicted_high_c = EXCLUDED.predicted_high_c,
+                actual_high_c = EXCLUDED.actual_high_c,
+                bias_c = EXCLUDED.bias_c
+            """,
+            station, model_name, target_date, predicted_c, actual_c, bias
+        )
+
+async def get_recent_bias(station: str, model_name: str, days: int = 7) -> float:
+    """Average bias over the last N days."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT AVG(bias_c) as avg_bias
+            FROM (
+                SELECT bias_c FROM model_bias
+                WHERE station=$1 AND model_name=$2
+                ORDER BY target_date DESC
+                LIMIT $3
+            ) sub
+            """,
+            station, model_name, days
+        )
+        if row and row["avg_bias"] is not None:
+            return float(row["avg_bias"])
+    return 0.0

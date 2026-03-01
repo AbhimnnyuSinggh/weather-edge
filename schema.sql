@@ -182,3 +182,18 @@ CREATE TABLE IF NOT EXISTS warming_rates (
     sample_days INTEGER DEFAULT 0,
     UNIQUE(station, month)
 );
+
+-- Historical bias tracking: records bias per model per day based on METAR actuals
+CREATE TABLE IF NOT EXISTS model_bias (
+    id SERIAL PRIMARY KEY,
+    station TEXT NOT NULL REFERENCES stations(icao),
+    model_name TEXT NOT NULL,
+    target_date DATE NOT NULL,
+    predicted_high_c REAL,
+    actual_high_c REAL,
+    bias_c REAL,
+    recorded_at TIMESTAMP DEFAULT NOW(),
+    UNIQUE(station, model_name, target_date)
+);
+CREATE INDEX IF NOT EXISTS idx_bias_station_model ON model_bias(station, model_name, target_date DESC);
+

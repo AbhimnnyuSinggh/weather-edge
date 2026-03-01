@@ -157,6 +157,7 @@ async def _fetch_open_meteo(station: str, lat: float, lon: float,
         "latitude": lat,
         "longitude": lon,
         "daily": "temperature_2m_max",
+        "hourly": "temperature_2m",
         "models": api_models,
         "timezone": "auto",
         "forecast_days": 2,
@@ -905,59 +906,169 @@ async def get_latest_from_db(stations_cfg: dict) -> Dict[str, Dict[str, ModelFor
     return results
 
 # ---------------------------------------------------------------------------
-# Daily High Prediction (3-step Bayesian Blend)
 # ---------------------------------------------------------------------------
-async def calculate_daily_high(models_data: Dict[str, ModelForecast], metar: Optional[Any], local_hour: int, station: str, unit: str = "C") -> float:
-    """
-    3-step Bayesian prediction:
-    Step 1: Inverse-MAE weighted average of all models
-    Step 2: METAR floor (can't be lower than already observed)
-    Step 3: Time-of-day blend (morning = models, afternoon = METAR)
-    """
+# 31-Member Open-Meteo GFS Ensemble
+# ---------------------------------------------------------------------------
+async def fetch_ensemble(lat: float, lon: float, unit: str = "F") -> List[float]:
+    """Fetch 31 iterations of the GFS Atmosphere Simulation representing a direct probability matrix."""
+    api_key = os.environ.get("OPEN_METEO_API_KEY")
+    url = "https://customer-ensemble-api.open-meteo.com/v1/ensemble" if api_key else "https://ensemble-api.open-meteo.com/v1/ensemble"
+    
+    params = {
+        "latitude": lat, "longitude": lon,
+        "daily": "temperature_2m_max",
+        "models": "gfs_seamless",
+        "timezone": "auto",
+        "forecast_days": 2,
+    }
+    if api_key:
+        params["apikey"] = api_key
 
-    # Default MAE per model (lower = more accurate = higher weight)
+    ssl_context = ssl.create_default_context()
+    ssl_context.check_hostname = False
+    ssl_context.verify_mode = ssl.CERT_NONE
+
+    async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context)) as session:
+        async with session.get(url, params=params, timeout=15) as resp:
+            if resp.status != 200:
+                logger.error("Ensemble API fetch failed with HTTP %d", resp.status)
+                return []
+            data = await resp.json()
+    
+    daily = data.get("daily", {})
+    members = []
+    for i in range(1, 32):
+        key = f"temperature_2m_max_member{i:02d}"
+        vals = daily.get(key, [None])
+        temp_c = vals[0]  # today's forecast
+        if temp_c is not None:
+            if unit == "F":
+                members.append(round(temp_c * 9/5 + 32, 1))
+            else:
+                members.append(round(temp_c, 1))
+    
+    return members
+
+# ---------------------------------------------------------------------------
+# Dewpoint Physical Constraints
+# ---------------------------------------------------------------------------
+def dewpoint_adjustment(current_temp: float, dewpoint: float, predicted_high: float, unit: str = "F"):
+    """
+    If dewpoint spread is very narrow, cap the predicted high.
+    High humidity prevents rapid warming.
+    """
+    spread = current_temp - dewpoint
+    
+    if unit == "C":
+        narrow_threshold = 3.0
+    else:
+        narrow_threshold = 5.0
+    
+    if spread < narrow_threshold:
+        # Very humid — cap warming potential
+        max_additional_rise = 5 if unit == "F" else 3
+        capped = current_temp + max_additional_rise
+        if predicted_high > capped:
+            return capped, f"⚠️ High humidity (dewpoint {dewpoint}°{unit}) caps warming"
+    
+    return predicted_high, None
+
+# ---------------------------------------------------------------------------
+# Daily High Prediction (5-step Bayesian Blend)
+# ---------------------------------------------------------------------------
+async def calculate_daily_high(models_data: Dict[str, ModelForecast], metar: Optional[Any], 
+                               metar_trend: Optional[Dict], ensemble_members: List[float],
+                               local_hour: int, station: str, unit: str = "F") -> float:
+    """
+    5-step prediction combining all data sources:
+    
+    Step 1: Inverse-MAE weighted model average (with bias correction)
+    Step 2: METAR floor (can't be lower than observed high)
+    Step 3: METAR trend projection (if rising, where does it end up?)
+    Step 4: Time-of-day blend
+    Step 5: Dewpoint constraint
+    """
+    
     DEFAULT_MAE = {
         "gfs": 1.8, "ecmwf": 1.5, "icon": 2.0, "gem": 2.2, "jma": 2.0,
         "nws": 1.5, "noaa_mos": 1.3, "visual_crossing": 2.0,
     }
-
-    # Step 1: Inverse-MAE weighted average
+    
+    # Step 1: Inverse-MAE weighted average with bias correction
     weights = {}
     temps = {}
     for name, forecast in models_data.items():
-        temp = forecast.bias_corrected_c if unit == "C" else forecast.bias_corrected_f
-        if temp is None or temp == 0:
+        try:
+            temp = forecast.bias_corrected_c if unit == "C" else forecast.bias_corrected_f
+            if temp is None:
+                continue
+            
+            # Apply yesterday's bias explicitly
+            recent_bias = await tracker.get_recent_bias(station, name, days=7)
+            temp = temp - recent_bias  # Correct for known model bias
+            
+            mae = DEFAULT_MAE.get(name, 2.0)
+            weights[name] = 1.0 / max(0.5, mae)
+            temps[name] = temp
+        except AttributeError:
             continue
-        mae = DEFAULT_MAE.get(name, 2.0)
-        weights[name] = 1.0 / max(0.5, mae)
-        temps[name] = temp
-
+    
     if not temps:
         return 0.0
-
+    
     total_w = sum(weights.values())
     model_pred = sum(temps[n] * (weights[n] / total_w) for n in temps)
-
+    
+    # Add ensemble median if available
+    if ensemble_members and len(ensemble_members) >= 20:
+        ensemble_median = sorted(ensemble_members)[len(ensemble_members) // 2]
+        # Ensemble gets weight equivalent to best model (MAE ~1.3)
+        ensemble_weight = 1.0 / 1.3
+        model_pred = (model_pred * total_w + ensemble_median * ensemble_weight) / (total_w + ensemble_weight)
+    
     # Step 2: METAR floor
     current_high = None
     if metar and hasattr(metar, 'velocity') and metar.velocity:
         current_high = metar.velocity.day_high if unit == "C" else metar.velocity.day_high_f
-        model_pred = max(model_pred, current_high)
-
-    # Step 3: Time-of-day blend
-    # Before noon local → models dominate (0.0-0.3 blend)
-    # After 2PM local → METAR dominates (0.7-1.0 blend)
+        if current_high:
+            model_pred = max(model_pred, current_high)
+    
+    # Step 3: METAR trend projection
+    if metar_trend and metar_trend.get("projected_high"):
+        trend_pred = metar_trend["projected_high"]
+        
+        # Blend based on time of day and whether temp is rising
+        if local_hour >= 12 and metar_trend.get("is_rising"):
+            # Afternoon and rising → trend is very reliable
+            metar_trend_weight = 3.0
+        elif local_hour >= 10:
+            metar_trend_weight = 1.5
+        else:
+            metar_trend_weight = 0.5
+        
+        total_w_with_trend = total_w + metar_trend_weight
+        model_pred = ((model_pred * total_w) + (trend_pred * metar_trend_weight)) / total_w_with_trend
+    
+    # Step 4: Time-of-day blend with METAR
     if local_hour < 8:
-        blend_weight = 0.0
+        blend = 0.0
     elif local_hour < 14:
-        blend_weight = (local_hour - 8) / 12.0  # 0.0 at 8AM, 0.5 at 14
+        blend = (local_hour - 8) / 12.0
     else:
-        blend_weight = 0.5 + (local_hour - 14) / 12.0  # 0.5 at 14, ~0.83 at 18
-    blend_weight = max(0.0, min(1.0, blend_weight))
-
+        blend = 0.5 + (local_hour - 14) / 12.0
+    blend = max(0.0, min(1.0, blend))
+    
     if current_high is not None:
-        final = (1 - blend_weight) * model_pred + blend_weight * current_high
+        final = (1 - blend) * model_pred + blend * current_high
     else:
         final = model_pred
-
+    
+    # Step 5: Dewpoint constraint
+    if metar:
+        dewpoint = metar.dewpoint_f if unit == "F" else metar.dewpoint_c
+        if dewpoint is not None:
+            current_temp = metar.temp_f if unit == "F" else metar.temp_c
+            if current_temp is not None:
+                final, dew_note = dewpoint_adjustment(current_temp, dewpoint, final, unit)
+    
     return round(final, 1)

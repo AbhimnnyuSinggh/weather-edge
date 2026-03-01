@@ -4,9 +4,6 @@
 
 # --- Bot Settings ---
 bot:
-  scan_interval_seconds: 300
-  fast_scan_interval_seconds: 120
-  fast_scan_duration_minutes: 30
   timezone: "Asia/Kolkata"
   # First 3 days: enforce flat 5% sizing regardless of confidence
   conservative_days: 3
@@ -158,21 +155,6 @@ confidence:
     model_diversity: 25
     historical_success: 20
     book_depth: 20
-
-# --- Model Release Schedule (UTC) ---
-model_releases:
-  hrrr_12z:
-    utc_hour: 18
-    utc_minute: 30
-    applies_to: ["KLGA", "KMIA", "KORD"]
-  ecmwf_12z:
-    utc_hour: 18
-    utc_minute: 30
-    applies_to: ["RKSI", "EGLC", "LTAC", "SAEZ", "KLGA"]
-  gfs_12z:
-    utc_hour: 16
-    utc_minute: 30
-    applies_to: ["RKSI", "EGLC", "LTAC", "SAEZ", "KLGA"]
 
 # --- Circuit Breakers ---
 circuit_breakers:

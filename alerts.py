@@ -361,18 +361,7 @@ async def send_daily_loss_limit_message():
     await _send(msg)
 
 
-# ---------------------------------------------------------------------------
-# Model release reminder
-# ---------------------------------------------------------------------------
-async def send_model_release_reminder(model_name: str, stations: List[str]):
-    ist_time = _ist_time()
-    stations_str = ", ".join(stations)
-    msg = (
-        f"⏰ {model_name.upper()} just updated | {ist_time}\n"
-        f"Scanning: {stations_str}\n"
-        f"Alerts coming in 2-3 minutes if opportunities found."
-    )
-    await _send(msg)
+
 
 
 # ---------------------------------------------------------------------------
@@ -411,7 +400,7 @@ async def send_startup_message(wallet_state, stations_list: List[str]):
         f"✅ Weather-Edge bot online\n"
         f"Capital: ${total:.2f} | Stations: {len(stations_list)} active\n"
         f"Tracking: {stations_str}\n"
-        f"Next scan in 5 minutes."
+        f"Awake and waiting for /<city> commands."
     )
     await _send(msg)
 

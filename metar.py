@@ -348,3 +348,38 @@ async def enrich_metar(station_metar: StationMETAR, station_tz: str,
         )
 
     return station_metar
+
+# ---------------------------------------------------------------------------
+# Metar Trend Projections
+# ---------------------------------------------------------------------------
+from typing import Any
+async def analyze_metar_trend(station: str, station_tz: str, unit: str = "F") -> Dict[str, Any]:
+    """
+    Analyzes historical readings to project the actual high temperature based on momentum.
+    """
+    velocity_data = await calculate_velocity(station, station_tz, unit)
+    if not velocity_data:
+        return {"projected_high": None, "is_rising": False, "velocity": 0.0}
+    
+    current_high = velocity_data.day_high if unit == "C" else velocity_data.day_high_f
+    v = velocity_data.velocity
+    
+    target_hour = 15  # Peak heating is usually 3 PM (15:00) local time
+    tz = pytz.timezone(station_tz)
+    now_local = datetime.now(tz)
+    
+    projected_high = current_high
+    is_rising = v > 0.0
+    
+    if now_local.hour < target_hour and is_rising:
+        # If it's warming and we haven't hit peak heating hour, project the high
+        hours_remaining = target_hour - now_local.hour
+        # Taper the velocity as we get closer to peak
+        projected_high = current_high + (v * hours_remaining * 0.7)
+        
+    return {
+        "projected_high": round(projected_high, 1),
+        "is_rising": is_rising,
+        "velocity": round(v, 2),
+        "current_high": current_high
+    }

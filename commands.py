@@ -395,6 +395,7 @@ async def cmd_city_analysis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         now_temp_str = f"—°{unit}"
         high_so_far_str = ""
         high_so_far_val = None
+        metar_trend = {}
         
         if icao in raw_metar:
             station_metar = await metar_mod.enrich_metar(raw_metar[icao], tz_name, unit)
@@ -403,50 +404,34 @@ async def cmd_city_analysis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 now_temp_str = f"{now_t:.0f}°{unit}"
                 if station_metar.velocity:
                     high_so_far_val = station_metar.velocity.day_high if unit == "C" else station_metar.velocity.day_high_f
-                    high_so_far_str = f" / High so far: {high_so_far_val:.0f}°{unit}"
+                    high_time_str = station_metar.velocity.high_time.strftime('%I:%M %p') if station_metar.velocity.high_time else 'recently'
+                    high_so_far_str = f" (hit at {high_time_str})"
+            
+            metar_trend = await metar_mod.analyze_metar_trend(icao, tz_name, unit)
 
-        # 4. Fetch All Models from Local Database Cache (Bypassing Open-Meteo HTTP 429 bans)
-        import tracker
+        # 4. Fetch All Models ON DEMAND
         city_config["target_date"] = target_date
-        models_data = await tracker.get_latest_forecasts(icao)
-
-        # 5. Format Model Forecasts block
-        MODEL_ORDER = ["gfs", "ecmwf", "icon", "gem", "jma", "nws", "noaa_mos", "visual_crossing"]
-        ABBR = {
-            "gfs": "GFS", "ecmwf": "ECMWF", "icon": "ICON", "gem": "GEM", 
-            "jma": "JMA", "nws": "NWS", "noaa_mos": "MOS", "visual_crossing": "VC"
-        }
+        models_raw = await models_mod.fetch_all_stations({icao: city_config})
+        models_data = models_raw.get(icao, {})
         
-        model_strings = []
-        for mn in MODEL_ORDER:
-            fc = models_data.get(mn)
-            if fc:
-                t = fc.bias_corrected_c if unit == "C" else fc.bias_corrected_f
-                model_strings.append(f"{ABBR[mn]}: {t:.0f}°")
-            else:
-                model_strings.append(f"{ABBR[mn]}: —")
-                
-        row1 = " | ".join(model_strings[:4])
-        row2 = " | ".join(model_strings[4:])
+        ensemble_members = await models_mod.fetch_ensemble(city_config["lat"], city_config["lon"], unit)
 
-        m_high_str = f"{high_so_far_val:.0f}°{unit}" if high_so_far_val else "—"
-
-        # 6. Calculate Predicted Daily High
+        # 5. Calculate Predicted Daily High
         predicted_high = await models_mod.calculate_daily_high(
-            models_data, station_metar, now_local.hour, icao, unit
+            models_data, station_metar, metar_trend, ensemble_members, now_local.hour, icao, unit
         )
         
         m_high_floor = "No"
         if high_so_far_val and predicted_high == high_so_far_val:
             m_high_floor = "Yes"
 
-        # 7. Distribution / Edge Scan
+        # 6. Distribution / Edge Scan
         import distribution
         import signals
         probs = distribution.calculate_bin_probabilities(
             models_data, 
             market_group.bins if market_group else [], 
-            predicted_high, 
+            ensemble_members,
             high_so_far_val, 
             unit
         )
@@ -490,18 +475,24 @@ async def cmd_city_analysis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "",
             "━━ LIVE STATUS ━━",
             f"🌡️ Current temp: {now_temp_str} (METAR recently)",
-            f"📈 Today's high so far: {high_so_far_val:.0f}°{unit} (hit at {high_so_far_str.replace(' / High so far: ','')})" if high_so_far_val else f"📈 Today's high so far: —",
+            f"📈 Today's high so far: {high_so_far_val:.0f}°{unit}{high_so_far_str}" if high_so_far_val else f"📈 Today's high so far: —",
             f"🕐 Local time: {now_local.strftime('%I:%M %p %Z')}",
             f"   High likely to hit: {peak_start_local.strftime('%I:%M')} - {peak_end_local.strftime('%I:%M %p %Z')} ({peak_start_ist.strftime('%I:%M')} - {peak_end_ist.strftime('%I:%M %p')} IST)",
             "",
             f"━━ MODEL FORECASTS (Today's High) ━━"
         ]
 
+        ABBR = {
+            "gfs": "GFS", "ecmwf": "ECMWF", "icon": "ICON", "gem": "GEM", 
+            "jma": "JMA", "nws": "NWS", "noaa_mos": "MOS", "visual_crossing": "VC",
+            "ensemble": "ENS"
+        }
+        
         m1 = []
         m1_keys = ["gfs", "ecmwf", "icon", "gem"]
         for mn in m1_keys:
             fc = models_data.get(mn)
-            t_str = f"{fc.bias_corrected_c:.0f}°C" if unit == "C" else (f"{fc.bias_corrected_f:.0f}°F" if fc else "—")
+            t_str = f"{fc.bias_corrected_c:.0f}°C" if unit == "C" and fc else (f"{fc.bias_corrected_f:.0f}°F" if fc else "—")
             m1.append(f"{ABBR[mn]}: {t_str}")
             
         dashboard_msg.append("  " + " | ".join(m1))
@@ -510,19 +501,16 @@ async def cmd_city_analysis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if city_config.get("country", "US") == "US":
             m2_keys = ["nws", "noaa_mos", "visual_crossing"]
         elif tz_name.startswith("Asia/"):
-            m2_keys = ["jma", "visual_crossing", "nws", "noaa_mos"]
+            m2_keys = ["jma", "visual_crossing"]
         else:
-            m2_keys = ["visual_crossing", "jma", "nws", "noaa_mos"]
+            m2_keys = ["visual_crossing", "jma"]
 
         for mn in m2_keys:
             fc = models_data.get(mn)
-            t_str = f"{fc.bias_corrected_f:.0f}°F" if city_config.get("country", "US") == "US" and mn in ["nws", "noaa_mos", "visual_crossing"] else (f"{fc.bias_corrected_c:.0f}°C" if fc else "—")
-            if mn == "visual_crossing" and city_config.get("country", "US") == "US":
-                t_str = f"{fc.bias_corrected_f:.0f}°F" if fc else "—" # explicitly handle
-            elif city_config.get("country", "US") == "US" and fc:
-                t_str = f"{fc.bias_corrected_f:.0f}°F"    
-            elif fc:
-                t_str = f"{fc.bias_corrected_c:.0f}°C"
+            if mn in ["nws", "noaa_mos", "visual_crossing"] and city_config.get("country", "US") == "US":
+                t_str = f"{fc.bias_corrected_f:.0f}°F" if fc else "—"
+            else:
+                t_str = f"{fc.bias_corrected_c:.0f}°C" if fc else "—"
                 
             m2.append(f"{ABBR.get(mn, mn)}: {t_str}")
             
@@ -550,7 +538,16 @@ async def cmd_city_analysis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         dashboard_msg.extend([
             "",
             f"━━ PREDICTED DAILY HIGH: {predicted_high:.1f}°{unit} ━━",
-            f"  Bin: ... | Confidence: {conf_lbl} ({detail})",
+            f"  Bin: {market_link} | Confidence: {conf_lbl} ({detail})"
+        ])
+        
+        if metar_trend and metar_trend.get("projected_high"):
+            trend_val = metar_trend["projected_high"]
+            trend_dir = "📈 Rising" if metar_trend.get("is_rising") else "📉 Falling"
+            vel = metar_trend.get("velocity", 0)
+            dashboard_msg.append(f"  METAR Trend: {trend_val:.1f}°{unit} ({trend_dir} at {vel:+.2f}°/hr)")
+            
+        dashboard_msg.extend([
             "",
             f"━━ MARKET EDGE SCAN ━━",
             f"  Bin        Price   Our Prob   Edge     Signal"

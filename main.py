@@ -101,391 +101,11 @@ async def setup_telegram(config: dict) -> Application:
 # ---------------------------------------------------------------------------
 # Startup sequence
 # ---------------------------------------------------------------------------
-async def startup(config: dict):
-    """
-    1. Connect to PostgreSQL
-    2. Run schema migration
-    3. Initialise stations from config
-    4. Initialise Telegram bot
-    5. Sync wallet
-    6. Populate historical stats
-    7. Send startup message
-    """
-    logger.info("=== Weather-Edge Bot Starting ===")
-
-    # 1. Database
-    await tracker.init_db()
-    logger.info("Database connected")
-
-    # 2. Stations
-    import markets
-    stations_cfg = {city_cfg["icao"]: city_cfg for city_slug, city_cfg in markets.CITIES.items()}
-    await tracker.init_stations(stations_cfg)
-
-    # 2b. Initialize wallet with config capital
-    starting_capital = config.get("bot", {}).get("starting_capital", 100.0)
-    wallet_mod.set_config_capital(starting_capital)
-
-    # 3. Telegram
-    tg_app = await setup_telegram(config)
-
-    # 4. Wallet sync
-    try:
-        ws = await wallet_mod.sync()
-        logger.info("Wallet synced: balance=%.2f total=%.2f", ws.balance, ws.total_value)
-    except Exception as e:
-        logger.error("Initial wallet sync failed: %s", e)
-        ws = wallet_mod.WalletState(balance=0.0)
-
-    # 5. Ensure today's summary row exists
-    await tracker.ensure_today_summary(
-        {"total_value": ws.total_value}
-    )
-
-    # 6. Populate historical stats for each station
-    for icao, cfg in stations_cfg.items():
-        try:
-            await probability.populate_historical_stats(icao, cfg.get("tz", "UTC"))
-        except Exception as e:
-            logger.error("Historical stats error for %s: %s", icao, e)
-
-    # 7. Startup message
-    await alerts.send_startup_message(ws, list(stations_cfg.keys()))
-    logger.info("Startup complete — entering main loop")
-
-    return tg_app
-
-
-# ---------------------------------------------------------------------------
-# Main scan loop
-# ---------------------------------------------------------------------------
-async def main_loop(config: dict):
-    """The forever-running scan cycle."""
-    tg_app = await startup(config)
-    import markets
-    stations_cfg = {city_cfg["icao"]: city_cfg for _, city_cfg in markets.CITIES.items()}
-    station_ids = list(stations_cfg.keys())
-
-    # Deduplication cache: {signal_key: timestamp_sent}
-    # Prevents sending the same alert within 30 minutes
-    _recent_alerts: Dict[str, datetime] = {}
-    DEDUP_MINUTES = 30
-
+async def idle_forever():
+    """Keeps the process alive without burning CPU or API limits."""
     while True:
-        scan_start = datetime.utcnow()  # noqa: DTZ003
-        logger.info("--- Scan cycle start ---")
+        await asyncio.sleep(3600)
 
-        try:
-            # Determine scan interval
-            interval = scheduler.check_if_model_release_window(config)
-
-            # Expire old capital reservations
-            await allocator.expire_reservations()
-
-            # Step 1: Wallet sync
-            try:
-                wallet_state = await wallet_mod.sync()
-            except Exception as e:
-                logger.error("Wallet sync failed: %s — skipping cycle", e)
-                await asyncio.sleep(interval)
-                continue
-
-            # Ensure today's summary
-            await tracker.ensure_today_summary(
-                {"total_value": wallet_state.total_value}
-            )
-
-            # Step 2: Process resolutions
-            for rp in wallet_state.resolved:
-                try:
-                    await tracker.process_resolution({
-                        "station": rp.station,
-                        "target_date": rp.target_date,
-                        "payout": rp.payout,
-                        "cost": rp.cost,
-                    })
-                    await alerts.send_resolution_notification({
-                        "station": rp.station,
-                        "target_date": rp.target_date,
-                        "side": rp.side,
-                        "bin_label": rp.bin_label,
-                        "cost": rp.cost,
-                        "payout": rp.payout,
-                        "profit_loss": rp.profit_loss,
-                        "outcome": "win" if rp.profit_loss > 0 else "loss",
-                    })
-                except Exception as e:
-                    logger.error("Resolution processing error: %s", e)
-
-            # Step 3: Circuit breakers
-            breaker = await tracker.check_circuit_breakers(
-                {"total_value": wallet_state.total_value}, config
-            )
-            if breaker and "halt" in breaker:
-                logger.info("Circuit breaker HALT active: %s", breaker)
-                await alerts.send_circuit_breaker_alert(breaker, config)
-                await asyncio.sleep(interval)
-                continue
-
-            # Step 4: Daily loss limit
-            if await tracker.daily_loss_exceeded(
-                {"total_value": wallet_state.total_value}, config
-            ):
-                await alerts.send_daily_loss_limit_message()
-                await asyncio.sleep(interval)
-                continue
-
-            # Step 4.5: Discover newly opened weather markets
-            # Refactored: We no longer auto-discover, we strictly poll the 15 configured CITIES.
-            stations_cfg = markets.CITIES
-            station_ids = [cfg["icao"] for cfg in stations_cfg.values()]
-
-            # Step 5: Fetch METAR for all stations
-            metar_data = {}
-            try:
-                raw_metar = await metar_mod.fetch_all_stations(station_ids)
-                # Enrich with velocity and rounding edge
-                for icao, m in raw_metar.items():
-                    cfg = next((c for c in stations_cfg.values() if c["icao"] == icao), {})
-                    metar_data[icao] = await metar_mod.enrich_metar(
-                        m, cfg.get("tz", "UTC"), cfg.get("unit", "C")
-                    )
-            except Exception as e:
-                logger.error("METAR fetch error: %s — using cached", e)
-
-            # Step 6: Fetch model forecasts
-            model_data = {}
-            try:
-                # Build dict mapping icao -> config for models_mod
-                models_cfg = {c["icao"]: c for c in stations_cfg.values()}
-                if scheduler.should_fetch_models(config):
-                    model_data = await models_mod.fetch_all_stations(models_cfg)
-                    scheduler.mark_models_fetched()
-                else:
-                    model_data = await models_mod.get_latest_from_db(models_cfg)
-            except Exception as e:
-                logger.error("Model fetch error: %s", e)
-
-            # Step 7: Fetch Polymarket markets (today and tomorrow for all 15 cities)
-            market_data = {}
-            active_markets_count = 0
-            try:
-                import datetime as dt
-                # Determine "today" based on bot server UTC
-                utc_now = datetime.utcnow().date()
-                today_date = utc_now
-                tomorrow_date = utc_now + dt.timedelta(days=1)
-                
-                for city_cmd, city_cfg in stations_cfg.items():
-                    icao = city_cfg["icao"]
-                    
-                    # Fetch Today
-                    mg_today = await markets.fetch_city_market(city_cmd, today_date)
-                    if mg_today and mg_today.bins:
-                        key = f"{icao}_{today_date}"
-                        market_data[key] = mg_today
-                        active_markets_count += 1
-                        
-                    # Fetch Tomorrow
-                    mg_tomorrow = await markets.fetch_city_market(city_cmd, tomorrow_date)
-                    if mg_tomorrow and mg_tomorrow.bins:
-                        key = f"{icao}_{tomorrow_date}"
-                        market_data[key] = mg_tomorrow
-                        active_markets_count += 1
-                        
-            except Exception as e:
-                logger.error("Market fetch error: %s — retrying in 30s", e)
-                await asyncio.sleep(30)
-                try:
-                    market_data = await markets.fetch_active_weather_markets(station_ids)
-                except Exception as e2:
-                    logger.error("Market retry also failed: %s", e2)
-
-            if not market_data:
-                logger.info("No active markets found — sleeping")
-                await asyncio.sleep(interval)
-                continue
-
-            # Step 8: Probability engine
-            prob_data = {}
-            try:
-                prob_data = await probability.calculate_all(
-                    metar_data, model_data, market_data, stations_cfg
-                )
-            except Exception as e:
-                logger.error("Probability calc error: %s", e)
-
-            # Step 9: Generate signals
-            raw_signals = []
-            try:
-                raw_signals = await signals_mod.generate_all(
-                    metar_data, model_data, market_data, prob_data,
-                    wallet_state, config, stations_cfg,
-                )
-                logger.info("Signals generated: %d", len(raw_signals))
-            except Exception as e:
-                logger.error("Signal generation error: %s", e)
-
-            # Step 10: Allocate and rank
-            ranked_alerts = []
-            try:
-                ranked_alerts = await allocator.rank_and_size(
-                    raw_signals, wallet_state, config
-                )
-                logger.info("Alerts ranked: %d", len(ranked_alerts))
-            except Exception as e:
-                logger.error("Allocation error: %s", e)
-
-            # Step 11: Send alerts (if not paused)
-            if not commands.is_paused():
-                if ranked_alerts:
-                    alert_interval = config.get("trading", {}).get("alert_update_interval_minutes", 8)
-                    now = datetime.utcnow()
-                    
-                    # Clean expired dedup entries (Keep in cache for 60 mins)
-                    expired = [k for k, v in _recent_alerts.items()
-                               if isinstance(v, dict) and (now - v["time"]).total_seconds() > 60 * 60
-                               or not isinstance(v, dict)]
-                    for k in expired:
-                        del _recent_alerts[k]
-
-                    max_alerts_per_day = config.get("trading", {}).get("max_alerts_per_day", 4)
-
-                    for alert in ranked_alerts:
-                        # Check if user already took the trade
-                        if wallet_state.has_user_taken_trade(alert.station, alert.target_date, alert.bin_label):
-                            logger.info("Skipping already taken trade: %s", alert.bin_label)
-                            continue
-
-                        # Dedup key: station + date + trade_type + bin_label
-                        import hashlib
-                        dedup_str = f"{alert.station}_{alert.target_date}_{alert.trade_type}_{alert.bin_label}"
-                        dedup_key = hashlib.md5(dedup_str.encode()).hexdigest()
-
-                        is_new_alert = True
-                        if dedup_key in _recent_alerts:
-                            last_data = _recent_alerts[dedup_key]
-                            mins_ago = (now - last_data["time"]).total_seconds() / 60.0
-                            if mins_ago < alert_interval:
-                                logger.info("Skipping fresh un-taken alert (waiting %d min): %s", alert_interval, alert.bin_label)
-                                continue
-                            
-                            # It's an update!
-                            if alert.entry_price == last_data["price"]:
-                                # Price same, track silently
-                                _recent_alerts[dedup_key]["time"] = now
-                                continue
-
-                            alert.is_update = True
-                            alert.update_minutes_ago = int(mins_ago)
-                            alert.old_entry_price = last_data["price"]
-                            alert.old_edge = last_data["edge"]
-                            is_new_alert = False
-
-                        # Enforce daily alert limit for new alerts
-                        if is_new_alert:
-                            if not await tracker.can_send_alert_today(max_alerts_per_day):
-                                logger.info("Daily alert limit reached (%d). Skipping new alert: %s", max_alerts_per_day, alert.bin_label)
-                                continue
-
-                        try:
-                            # Send standard alert
-                            await alerts.send_trade_alert(alert, wallet_state)
-                            _recent_alerts[dedup_key] = {
-                                "time": now,
-                                "price": alert.entry_price,
-                                "edge": (alert.win_probability - alert.entry_price),
-                                "station": alert.station,
-                                "target_date": alert.target_date,
-                                "bin_label": alert.bin_label,
-                                "side": alert.side,
-                                "market_id": alert.market_id,
-                                "trade_type": alert.trade_type
-                            }
-                            if is_new_alert:
-                                await tracker.increment_today_alert_count()
-                            await allocator.reserve_capital(alert.sized_cost, alert.alert_id)
-                        except Exception as e:
-                            logger.error("Alert send error: %s", e)
-                            
-                    # Check for cancelled edges
-                    current_alert_keys = {
-                        hashlib.md5(f"{a.station}_{a.target_date}_{a.trade_type}_{a.bin_label}".encode()).hexdigest()
-                        for a in ranked_alerts
-                    }
-                    
-                    for k, v in list(_recent_alerts.items()):
-                        if k not in current_alert_keys:
-                            # Was in recent alerts, but no longer edge! Check if user took it.
-                            if wallet_state.has_user_taken_trade(v["station"], v["target_date"], v["bin_label"]):
-                                del _recent_alerts[k]
-                                continue
-                            
-                            # Edge is gone, find current price in markets
-                            m_key = f"{v['station']}_{v['target_date'].isoformat() if isinstance(v['target_date'], date) else v['target_date']}"
-                            m_group = market_data.get(m_key)
-                            if m_group:
-                                current_price = 0
-                                for b in m_group.bins:
-                                    blabel = b.bin.label if hasattr(b.bin, "label") else b.bin.get("label", "")
-                                    if blabel == v["bin_label"]:
-                                        current_price = b.yes_price if v["side"] == "YES" else (1.0 - b.yes_price)
-                                        break
-                                
-                                # Send cancellation alert
-                                if current_price > 0:
-                                    cancel_alert = getattr(allocator, "AlertReady")(
-                                        trade_type=v["trade_type"], station=v["station"], city="", target_date=v["target_date"],
-                                        side=v["side"], bin_label=v["bin_label"], entry_price=current_price,
-                                        is_update=True, update_minutes_ago=int((now - v["time"]).total_seconds() / 60.0),
-                                        old_entry_price=v["price"], old_edge=v["edge"], is_cancelled=True
-                                    )
-                                    await alerts.send_trade_alert(cancel_alert, wallet_state)
-                            del _recent_alerts[k]
-                elif scheduler.is_end_of_trading_day(stations_cfg):
-                    best_ev = max(
-                        (s.ev for s in raw_signals), default=0
-                    )
-                    silent_threshold = config.get("trading", {}).get(
-                        "silent_day_min_ev", 0.50
-                    )
-                    if best_ev < silent_threshold:
-                        await alerts.send_silent_day_message(
-                            best_ev=best_ev,
-                            markets_scanned=len(market_data),
-                            stations_scanned=len(station_ids),
-                            balance=wallet_state.balance,
-                        )
-
-            # Step 12: Store market snapshot
-            try:
-                await tracker.store_market_snapshot(market_data)
-            except Exception as e:
-                logger.error("Snapshot store error: %s", e)
-
-            # Check scheduled events (reports, reminders, stats updates)
-            try:
-                await scheduler.check_scheduled_events(
-                    config, wallet_state, stations_cfg
-                )
-            except Exception as e:
-                logger.error("Scheduler error: %s", e)
-
-        except Exception as e:
-            logger.error("CRITICAL scan cycle error: %s", e, exc_info=True)
-            try:
-                await alerts._send(f"🚨 Bot error (cycle continues): {str(e)[:200]}")
-            except Exception:
-                pass
-
-        # Sleep until next cycle
-        elapsed = (datetime.utcnow() - scan_start).total_seconds()  # noqa: DTZ003
-        sleep_time = max(0, interval - elapsed)
-        logger.info(
-            "--- Scan cycle done (%.1fs) — sleeping %.0fs ---",
-            elapsed, sleep_time,
-        )
-        await asyncio.sleep(sleep_time)
 
 
 # ---------------------------------------------------------------------------
@@ -531,12 +151,35 @@ async def run_health_server():
 # Entry point
 # ---------------------------------------------------------------------------
 async def run_all():
-    """Run health check server and main scan loop concurrently."""
+    """Run health check server and telegram polling only (on-demand mode)."""
     config = load_config()
-    logger.info("Config loaded: %d stations", len(config.get("stations", {})))
+    logger.info("Config loaded")
+    
+    # 1. Database
+    await tracker.init_db()
+    logger.info("Database connected")
+    
+    # 2. Telegram bot (registers /start + 15 city commands)
+    tg_app = await setup_telegram(config)
+    
+    # 3. Wallet sync once at startup
+    try:
+        ws = await wallet_mod.sync()
+        logger.info("Wallet: $%.2f", ws.balance)
+    except Exception as e:
+        logger.error("Initial wallet sync failed: %s", e)
+        ws = wallet_mod.WalletState(balance=0.0)
+    
+    # 4. Send startup message
+    import markets
+    stations_cfg = {city_cfg["icao"]: city_cfg for city_slug, city_cfg in markets.CITIES.items()}
+    await alerts.send_startup_message(ws, list(stations_cfg.keys()))
+    logger.info("Startup complete — zero background API polling initialized.")
+    
+    # 5. Run health server + telegram polling forever
     await asyncio.gather(
         run_health_server(),
-        main_loop(config),
+        idle_forever(),
     )
 
 
