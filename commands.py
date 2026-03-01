@@ -442,7 +442,7 @@ async def cmd_city_analysis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         reserve = total_cap * 0.15
         
         if market_group and market_group.bins:
-            trade_instructions, deployed = signals.analyze_market(market_group, probs, total_cap)
+            trade_instructions, deployed = signals.analyze_market(market_group, probs, total_cap, now_local.hour)
             deployable = max(0, total_cap - reserve) # Initial deployable
             remaining = max(0, deployable - deployed)
         else:

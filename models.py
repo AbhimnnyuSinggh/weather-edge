@@ -32,7 +32,6 @@ OPEN_METEO_ENSEMBLE_URL = "https://ensemble-api.open-meteo.com/v1/ensemble"
 NWS_POINTS_URL = "https://api.weather.gov/points"
 NOAA_MOS_URL = "https://aviationweather.gov/cgi-bin/data/mos.php"
 VISUAL_CROSSING_URL = "https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline"
-VISUAL_CROSSING_URL = "https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline"
 USER_AGENT = "WeatherEdgeBot/1.0"
 EWMA_ALPHA = 0.15  # ~90% weight to last 13 data points
 
@@ -146,7 +145,7 @@ async def _fetch_open_meteo(station: str, lat: float, lon: float,
     """Fetch forecasts from Open-Meteo for multiple models in one call."""
     model_map = {
         "gfs": "gfs_seamless",
-        "ecmwf": "ecmwf_ifs025",
+        "ecmwf": "ecmwf_ifs04",
         "icon": "icon_seamless",
         "gem": "gem_seamless",
         "jma": "jma_seamless",
@@ -930,10 +929,20 @@ async def fetch_ensemble(lat: float, lon: float, unit: str = "F") -> List[float]
 
     async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context)) as session:
         async with session.get(url, params=params, timeout=15) as resp:
-            if resp.status != 200:
+            if resp.status in (401, 403) and api_key:
+                logger.warning("Ensemble API key unauthorized. Falling back to free tier.")
+                url = "https://ensemble-api.open-meteo.com/v1/ensemble"
+                del params["apikey"]
+                async with session.get(url, params=params, timeout=15) as resp_fallback:
+                    if resp_fallback.status != 200:
+                        logger.error("Ensemble API fallback failed with HTTP %d", resp_fallback.status)
+                        return []
+                    data = await resp_fallback.json()
+            elif resp.status != 200:
                 logger.error("Ensemble API fetch failed with HTTP %d", resp.status)
                 return []
-            data = await resp.json()
+            else:
+                data = await resp.json()
     
     daily = data.get("daily", {})
     members = []
