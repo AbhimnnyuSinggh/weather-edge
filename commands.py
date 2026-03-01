@@ -519,13 +519,18 @@ async def cmd_city_analysis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             
         dashboard_msg.append("  " + " | ".join(m2))
             
-        reporting_count = sum(1 for v in models_data.values() if v)
+        valid_models = [m for k, m in models_data.items() if m and k in MODEL_ORDER]
+        reporting_count = len(valid_models)
         total_models = 7 if city_config.get("country", "US") == "US" else 6
         dashboard_msg.append(f"  ✅ {reporting_count}/{total_models} models reporting")
         
         # Confidence label
-        within_2 = sum(1 for f in models_data.values() if f and (
-            abs(f.bias_corrected_f - predicted_high) <= 2.0 if unit == "F" else abs(f.bias_corrected_c - predicted_high) <= 2.0))
+        within_2 = 0
+        for f in valid_models:
+            diff = abs(f.bias_corrected_f - predicted_high) if unit == "F" else abs(f.bias_corrected_c - predicted_high)
+            if diff <= 2.0:
+                within_2 += 1
+                
         conf_frac = within_2 / max(1, reporting_count)
         if conf_frac >= 0.85: conf_lbl = "HIGH"
         elif conf_frac >= 0.60: conf_lbl = "MEDIUM"

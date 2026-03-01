@@ -22,9 +22,10 @@ def calculate_bin_probabilities(models_data: Dict[str, ModelForecast], bins: lis
     For each bin, calculate the probability that the actual temp falls in it.
     Uses normal distribution per model, weighted by inverse-MAE.
     """
+    # Calibrated MAE to Std Dev mapping (tighter curves = stronger edge detection)
     DEFAULT_MAE = {
-        "gfs": 1.8, "ecmwf": 1.5, "icon": 2.0, "gem": 2.2, "jma": 2.0,
-        "nws": 1.5, "noaa_mos": 1.3, "visual_crossing": 2.0,
+        "gfs": 1.5, "ecmwf": 1.2, "icon": 1.6, "gem": 1.8, "jma": 1.8,
+        "nws": 1.2, "noaa": 1.1, "noaa_mos": 1.1, "visual_crossing": 1.6,
     }
 
     def norm_cdf(z):
@@ -33,12 +34,17 @@ def calculate_bin_probabilities(models_data: Dict[str, ModelForecast], bins: lis
     # Collect forecasts and weights
     forecasts = []  # list of (temp, weight, mae)
     for name, forecast in models_data.items():
-        temp = forecast.bias_corrected_c if unit == "C" else forecast.bias_corrected_f
-        if temp is None or temp == 0:
+        if name not in ["gfs", "ecmwf", "icon", "gem", "jma", "nws", "noaa_mos", "noaa", "visual_crossing"]:
             continue
-        mae = DEFAULT_MAE.get(name, 2.0)
-        weight = 1.0 / max(0.5, mae)
-        forecasts.append((temp, weight, mae))
+        try:
+            temp = forecast.bias_corrected_c if unit == "C" else forecast.bias_corrected_f
+            if temp is None:
+                continue
+            mae = DEFAULT_MAE.get(name, 1.8)
+            weight = 1.0 / max(0.5, mae)
+            forecasts.append((temp, weight, mae))
+        except AttributeError:
+            continue
 
     if not forecasts:
         return {}
@@ -54,7 +60,7 @@ def calculate_bin_probabilities(models_data: Dict[str, ModelForecast], bins: lis
 
         prob = 0.0
         for temp, weight, mae in forecasts:
-            std_dev = mae  # Use MAE as standard deviation
+            std_dev = max(0.4, mae * 0.35)  # Tighten standard deviation for steeper peaks
             
             # Handle open-ended bins
             if bin_low is None and bin_high is not None:
