@@ -320,7 +320,7 @@ async def generate_all(metar_data: dict, model_data: dict,
         prob = prob_data.get(station, {})
         models = model_data.get(station, {})
 
-        tz = pytz.timezone(cfg["timezone"])
+        tz = pytz.timezone(cfg.get("tz", "UTC"))
         now_local = datetime.now(tz)
         local_hour = now_local.hour
         is_coastal = cfg.get("is_coastal", False)

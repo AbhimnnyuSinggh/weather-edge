@@ -86,7 +86,7 @@ async def init_stations(stations_cfg: dict):
                 cfg.get("country"),
                 cfg["lat"],
                 cfg["lon"],
-                cfg["timezone"],
+                cfg.get("tz", "UTC"),
                 cfg.get("unit", "C"),
                 cfg.get("wunderground_url"),
                 cfg.get("is_coastal", False),

@@ -144,7 +144,7 @@ async def startup(config: dict):
     # 6. Populate historical stats for each station
     for icao, cfg in stations_cfg.items():
         try:
-            await probability.populate_historical_stats(icao, cfg["timezone"])
+            await probability.populate_historical_stats(icao, cfg.get("tz", "UTC"))
         except Exception as e:
             logger.error("Historical stats error for %s: %s", icao, e)
 

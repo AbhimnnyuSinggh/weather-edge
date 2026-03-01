@@ -282,7 +282,7 @@ async def calculate_all(metar_data: dict, model_data: dict,
         if not metar:
             continue
 
-        tz = pytz.timezone(cfg["timezone"])
+        tz = pytz.timezone(cfg.get("tz", "UTC"))
         now_local = datetime.now(tz)
         local_hour = now_local.hour
         is_coastal = cfg.get("is_coastal", False)

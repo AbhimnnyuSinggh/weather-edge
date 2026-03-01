@@ -204,7 +204,7 @@ async def _fetch_open_meteo(station: str, lat: float, lon: float,
         logger.error("Open-Meteo returned no daily data for %s", station)
         return results
 
-    tz_name = station_cfg.get("timezone", "UTC")
+    tz_name = station_cfg.get("tz", "UTC")
     today_local = datetime.now(pytz.timezone(tz_name)).date()
     tomorrow_local = today_local + timedelta(days=1)
 
@@ -329,7 +329,7 @@ async def _fetch_nws(station: str, lat: float, lon: float,
             try:
                 target_date = date.fromisoformat(start_time[:10])
             except (ValueError, IndexError):
-                tz_name = station_cfg.get("timezone", "UTC")
+                tz_name = station_cfg.get("tz", "UTC")
                 target_date = datetime.now(pytz.timezone(tz_name)).date()
 
             bias_c = await _get_bias(station, "nws", station_cfg)
@@ -424,7 +424,7 @@ async def _fetch_noaa(station: str, lat: float, lon: float,
             try:
                 target_date = date.fromisoformat(start_time[:10])
             except (ValueError, IndexError):
-                tz_name = station_cfg.get("timezone", "UTC")
+                tz_name = station_cfg.get("tz", "UTC")
                 target_date = datetime.now(pytz.timezone(tz_name)).date()
 
             bias_c = await _get_bias(station, "noaa", station_cfg)
@@ -492,7 +492,7 @@ async def _fetch_visual_crossing(station: str, lat: float, lon: float,
         raw_high_f = float(days[0].get("tempmax"))
         raw_high_c = (raw_high_f - 32.0) * 5.0 / 9.0
 
-        tz_name = station_cfg.get("timezone", "UTC")
+        tz_name = station_cfg.get("tz", "UTC")
         target_date = datetime.now(pytz.timezone(tz_name)).date()
 
         bias_c = await _get_bias(station, "visual_crossing", station_cfg)
@@ -551,7 +551,7 @@ async def _fetch_noaa_mos(station: str,
             return None
 
         raw_high_c = (raw_high_f - 32.0) * 5.0 / 9.0
-        tz_name = station_cfg.get("timezone", "UTC")
+        tz_name = station_cfg.get("tz", "UTC")
         target_date = datetime.now(pytz.timezone(tz_name)).date()  # MOS MAX is for today
 
         bias_c = await _get_bias(station, "noaa_mos", station_cfg)
@@ -634,10 +634,10 @@ async def _fetch_open_meteo_ensemble(station: str, lat: float, lon: float,
         try:
             target_date = date.fromisoformat(target_date_str)
         except ValueError:
-            tz_name = station_cfg.get("timezone", "UTC")
+            tz_name = station_cfg.get("tz", "UTC")
             target_date = datetime.now(pytz.timezone(tz_name)).date()
 
-        tz_name = station_cfg.get("timezone", "UTC")
+        tz_name = station_cfg.get("tz", "UTC")
         today_local = datetime.now(pytz.timezone(tz_name)).date()
         tomorrow_local = today_local + timedelta(days=1)
 

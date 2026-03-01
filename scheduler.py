@@ -130,7 +130,7 @@ async def check_scheduled_events(config: dict, wallet_state, stations_cfg: dict)
             try:
                 for icao, cfg in stations_cfg.items():
                     await probability.populate_historical_stats(
-                        icao, cfg["timezone"]
+                        icao, cfg.get("tz", "UTC")
                     )
                 _sent_today["stats_update"] = True
                 logger.info("Historical stats updated")
@@ -186,7 +186,7 @@ def is_end_of_trading_day(stations_cfg: dict) -> bool:
     latest_end = 0
 
     for icao, cfg in stations_cfg.items():
-        tz = pytz.timezone(cfg["timezone"])
+        tz = pytz.timezone(cfg.get("tz", "UTC"))
         now_local = datetime.now(tz)
         # Consider end of trading as 10 PM local
         if now_local.hour >= 22:
