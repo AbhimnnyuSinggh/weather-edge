@@ -194,13 +194,14 @@ async def _fetch_open_meteo(station: str, lat: float, lon: float,
         "forecast_days": 2,
     }
 
-    # Bypassing the Render IP rate limit by tunneling through AllOrigins CORS proxy
+    # Bypassing the Render IP rate limit by tunneling through Codetabs CORS proxy
     import urllib.parse
     import random
     qs = urllib.parse.urlencode(params)
+    # Add random cachebuster
     raw_url = f"{OPEN_METEO_URL}?{qs}&cb={random.randint(1000, 99999)}"
     encoded_url = urllib.parse.quote(raw_url, safe='')
-    fetch_url = f"https://api.allorigins.win/raw?url={encoded_url}"
+    fetch_url = f"https://api.codetabs.com/v1/proxy?quest={encoded_url}"
 
     results: Dict[str, ModelForecast] = {}
     
