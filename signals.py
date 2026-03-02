@@ -21,6 +21,28 @@ from metar import StationMETAR
 
 logger = logging.getLogger("signals")
 
+@dataclass
+class Signal:
+    trade_type: str
+    station: str
+    city: str
+    target_date: date
+    side: str
+    bin_label: str
+    bins: List[dict] = field(default_factory=list)
+    entry_price: float = 0.0
+    confidence_score: int = 0
+    confidence_components: dict = field(default_factory=dict)
+    ev: float = 0.0
+    win_probability: float = 0.0
+    profit_if_win: float = 0.0
+    loss_if_lose: float = 0.0
+    market_id: str = ""
+    polymarket_url: str = ""
+    book_depth: int = 0
+    metar_summary: str = ""
+    model_summary: str = ""
+    distribution_summary: str = ""
 
 # ---------------------------------------------------------------------------
 # City Dashboard - Trade Analysis
