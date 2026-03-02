@@ -27,8 +27,15 @@ def calculate_bin_probabilities(models_data, bins, ensemble_members=None, metar_
     """
     
     DEFAULT_MAE = {
+        # Existing
         "gfs": 1.8, "ecmwf": 1.5, "icon": 2.0, "gem": 2.2, "jma": 2.0,
         "nws": 1.5, "noaa_mos": 1.3, "visual_crossing": 2.0,
+        # New
+        "hrrr": 1.2,
+        "nbm": 1.1,
+        "arpege": 2.0,
+        "ukmo": 1.8,
+        "bom": 2.2,
     }
     
     def norm_cdf(z):

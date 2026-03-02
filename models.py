@@ -37,9 +37,16 @@ EWMA_ALPHA = 0.15  # ~90% weight to last 13 data points
 
 # Default MAE per model (°C) — used for distribution calculations
 DEFAULT_MAE = {
+    # Existing
     "gfs": 1.8, "ecmwf": 1.5, "icon": 2.0, "gem": 2.2, "jma": 2.0,
     "nws": 1.5, "noaa_mos": 1.3,
     "visual_crossing": 2.0, "ensemble": 1.0,
+    # New
+    "hrrr": 1.2,
+    "nbm": 1.1,
+    "arpege": 2.0,
+    "ukmo": 1.8,
+    "bom": 2.2,
 }
 
 # Rate limit tracking (resets per scan cycle)
@@ -96,8 +103,8 @@ async def fetch_all_stations(stations_cfg: dict) -> Dict[str, Dict[str, ModelFor
         model_list = cfg.get("models", ["gfs", "ecmwf", "icon", "gem", "jma"])
         lat, lon = cfg["lat"], cfg["lon"]
 
-        # 1) Open-Meteo deterministic (GFS, ECMWF, ICON, GEM, JMA)
-        open_meteo_models = [m for m in model_list if m in ("gfs", "ecmwf", "icon", "gem", "jma")]
+        # 1) Open-Meteo deterministic
+        open_meteo_models = [m for m in model_list if m in ("gfs", "ecmwf", "icon", "gem", "jma", "hrrr", "nbm", "arpege", "ukmo", "bom")]
         if open_meteo_models:
             om_results = await _fetch_open_meteo(icao, lat, lon, open_meteo_models, cfg)
             results[icao].update(om_results)
@@ -128,9 +135,10 @@ async def fetch_all_stations(stations_cfg: dict) -> Dict[str, Dict[str, ModelFor
         # --- DATABASE FALLBACK ---
         # If any live API failed (e.g. Rate Limit 429), recover the last known forecast from the DB
         cached_db = None
-        expected_models = open_meteo_models + ["ensemble", "visual_crossing"]
+        expected_models = [m for m in open_meteo_models if m not in ("hrrr", "nbm")]
+        expected_models.extend(["ensemble", "visual_crossing"])
         if cfg.get("country") == "US":
-            expected_models.extend(["nws", "noaa_mos"])
+            expected_models.extend(["nws", "noaa_mos", "hrrr", "nbm"])
             
         for m in expected_models:
             if m not in results[icao]:
@@ -165,6 +173,11 @@ async def _fetch_open_meteo(station: str, lat: float, lon: float,
         "icon": "icon_seamless",
         "gem": "gem_seamless",
         "jma": "jma_seamless",
+        "hrrr": "ncep_hrrr_conus",
+        "nbm": "ncep_nbm_conus",
+        "arpege": "arpege_world",
+        "ukmo": "ukmo_global_deterministic_10km",
+        "bom": "bom_access_global",
     }
     api_models = ",".join(model_map[m] for m in model_list if m in model_map)
 
@@ -206,17 +219,13 @@ async def _fetch_open_meteo(station: str, lat: float, lon: float,
                             logger.warning("Open-Meteo HTTP 429: Rate limit exhausted for %s", station)
                             return results
                             
-                    if resp.status in (400, 401, 403) and "customer" in fetch_url:
-                        logger.warning("Open-Meteo API key unauthorized for Customer-API. Falling back to public endpoint.")
-                        fallback_url = fetch_url.replace("customer-api.open-meteo.com", "api.open-meteo.com")
-                        if "apikey" in params:
-                            del params["apikey"]
-                        async with session.get(fallback_url, params=params, timeout=aiohttp.ClientTimeout(total=15)) as fallback_resp:
-                            if fallback_resp.status != 200:
-                                logger.error("Open-Meteo fallback HTTP %d for %s", fallback_resp.status, station)
-                                return results
-                            data = await fallback_resp.json()
-                            break # Fallback success, break retry loop
+                    if resp.status in (400, 401, 403):
+                        logger.error(
+                            "Open-Meteo HTTP %d for %s — check OPEN_METEO_API_KEY",
+                            resp.status, station
+                        )
+                        _rate_limit_status["open_meteo"] = "limited"
+                        return results
 
                     elif resp.status != 200:
                         logger.error("Open-Meteo HTTP %d for %s", resp.status, station)
@@ -440,6 +449,8 @@ async def _fetch_noaa(station: str, lat: float, lon: float,
                     logger.error("NOAA gridpoints HTTP %d for %s", resp.status, station)
                     return None
                 forecast_data = await resp.json()
+
+        print("NWS PERIODS:", [p["name"] + " | " + str(p["temperature"]) for p in forecast_data.get("properties", {}).get("periods", [])[:5]])
 
     except Exception as e:
         logger.error("NOAA error for %s: %s", station, e)
@@ -908,6 +919,7 @@ async def get_latest_from_db(stations_cfg: dict) -> Dict[str, Dict[str, ModelFor
         results[icao] = {}
         for target in [today, today]:
             rows = await tracker.get_latest_forecasts(icao, target)
+            if not rows: continue
             for r in rows:
                 weight = await _get_weight(icao, r["model_name"])
                 results[icao][r["model_name"]] = ModelForecast(
@@ -1019,8 +1031,15 @@ async def calculate_daily_high(models_data: Dict[str, ModelForecast], metar: Opt
     """
     
     DEFAULT_MAE = {
+        # Existing
         "gfs": 1.8, "ecmwf": 1.5, "icon": 2.0, "gem": 2.2, "jma": 2.0,
         "nws": 1.5, "noaa_mos": 1.3, "visual_crossing": 2.0,
+        # New
+        "hrrr": 1.2,
+        "nbm": 1.1,
+        "arpege": 2.0,
+        "ukmo": 1.8,
+        "bom": 2.2,
     }
     
     # Step 1: Inverse-MAE weighted average with bias correction

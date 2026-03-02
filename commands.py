@@ -471,7 +471,7 @@ async def cmd_city_analysis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         now_ist_str = datetime.now(ist_tz).strftime('%I:%M %p')
         
         dashboard_msg = [
-            f"🌡️ {city_name.upper()} ({icao}) — {target_dt_str} | {now_ist_str} IST",
+            f"🌡️ {city_name.upper()} ({icao}) — Forecast for: {target_dt_str} | {now_ist_str} IST",
             "",
             "━━ LIVE STATUS ━━",
             f"🌡️ Current temp: {now_temp_str} (METAR recently)",
@@ -479,47 +479,74 @@ async def cmd_city_analysis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"🕐 Local time: {now_local.strftime('%I:%M %p %Z')}",
             f"   High likely to hit: {peak_start_local.strftime('%I:%M')} - {peak_end_local.strftime('%I:%M %p %Z')} ({peak_start_ist.strftime('%I:%M')} - {peak_end_ist.strftime('%I:%M %p')} IST)",
             "",
-            f"━━ MODEL FORECASTS (Today's High) ━━"
+            f"━━ MODEL FORECASTS ({target_dt_str} High) ━━"
         ]
 
         ABBR = {
             "gfs": "GFS", "ecmwf": "ECMWF", "icon": "ICON", "gem": "GEM", 
-            "jma": "JMA", "nws": "NWS", "noaa_mos": "MOS", "visual_crossing": "VC",
-            "ensemble": "ENS"
+            "jma": "JMA", "hrrr": "HRRR", "nbm": "NBM", "arpege": "ARP",
+            "ukmo": "UKMO", "bom": "BOM", "nws": "NWS", "noaa_mos": "MOS", 
+            "visual_crossing": "VC", "ensemble": "ENS"
         }
         
-        m1 = []
-        m1_keys = ["gfs", "ecmwf", "icon", "gem"]
-        for mn in m1_keys:
+        m1, m2, m3 = [], [], []
+        
+        # Determine valid model sets based on what actually came back and what the city supports
+        supported_models = city_config.get("models", ["gfs", "ecmwf", "icon", "gem", "jma"])
+        
+        m1_keys = [m for m in ["gfs", "ecmwf", "icon", "gem", "jma"] if m in supported_models]
+        m2_keys = [m for m in ["nws", "noaa_mos", "hrrr", "nbm", "arpege", "ukmo", "bom", "visual_crossing"] if m in supported_models]
+        
+        # Always allow NWS, MOS, VC if they are present for US cities, otherwise just VC
+        is_us = city_config.get("country", "US") == "US"
+        m3_keys = ["nws", "noaa_mos", "visual_crossing"] if is_us else ["visual_crossing"]
+        
+        # Consolidate into 3 actual rows for display formatting based on the total active set
+        all_active_keys = [k for k, v in models_data.items() if v]
+        
+        display_m1 = [k for k in ["gfs", "ecmwf", "icon", "gem", "jma"] if k in all_active_keys]
+        display_m2 = [k for k in ["hrrr", "nbm", "arpege", "ukmo", "bom"] if k in all_active_keys]
+        display_m3 = [k for k in ["nws", "noaa_mos", "visual_crossing"] if k in all_active_keys]
+
+        def fmt_temp(mn):
             fc = models_data.get(mn)
-            t_str = f"{fc.bias_corrected_c:.0f}°C" if unit == "C" and fc else (f"{fc.bias_corrected_f:.0f}°F" if fc else "—")
-            m1.append(f"{ABBR[mn]}: {t_str}")
+            if not fc: return "—"
+            if mn in ["nws", "noaa_mos", "visual_crossing"] and is_us:
+                return f"{fc.bias_corrected_f:.0f}°F"
+            if unit == "C":
+                return f"{fc.bias_corrected_c:.0f}°C"
+            return f"{fc.bias_corrected_f:.0f}°F"
+
+        for mn in ["gfs", "ecmwf", "icon", "gem", "jma"]:
+            if mn in supported_models:
+                m1.append(f"{ABBR.get(mn, mn)}: {fmt_temp(mn)}")
+                
+        for mn in ["hrrr", "nbm", "arpege", "ukmo", "bom"]:
+            if mn in supported_models:
+                m2.append(f"{ABBR.get(mn, mn)}: {fmt_temp(mn)}")
+                
+        for mn in ["nws", "noaa_mos", "visual_crossing"]:
+            if mn in m3_keys:  # m3_keys handles the US check implicitly
+                m3.append(f"{ABBR.get(mn, mn)}: {fmt_temp(mn)}")
             
         dashboard_msg.append("  " + " | ".join(m1))
+        if m2:
+            dashboard_msg.append("  " + " | ".join(m2))
+        dashboard_msg.append("  " + " | ".join(m3))
+            
+        # Tally the total expected models dynamically based on country
+        base_om_count = len(m1_keys) + len(m2_keys)
+        total_models_expected = base_om_count + len(m3_keys)
         
-        m2 = []
+        reporting_count = len(display_m1) + len(display_m2) + len(display_m3)
+        
+        # Calculate expected based on intl vs US
         if city_config.get("country", "US") == "US":
-            m2_keys = ["nws", "noaa_mos", "visual_crossing"]
-        elif tz_name.startswith("Asia/"):
-            m2_keys = ["jma", "visual_crossing"]
+            total_models = len(m1_keys) + len(m2_keys) + len(m3_keys)
         else:
-            m2_keys = ["visual_crossing", "jma"]
-
-        for mn in m2_keys:
-            fc = models_data.get(mn)
-            if mn in ["nws", "noaa_mos", "visual_crossing"] and city_config.get("country", "US") == "US":
-                t_str = f"{fc.bias_corrected_f:.0f}°F" if fc else "—"
-            else:
-                t_str = f"{fc.bias_corrected_c:.0f}°C" if fc else "—"
-                
-            m2.append(f"{ABBR.get(mn, mn)}: {t_str}")
+            # HRRR and NBM are missing for intl
+            total_models = len(m1_keys) + (len(m2_keys)-2) + len(m3_keys)
             
-        dashboard_msg.append("  " + " | ".join(m2))
-            
-        allowed_keys = m1_keys + m2_keys
-        valid_models = [m for k, m in models_data.items() if m and k in allowed_keys]
-        reporting_count = len(valid_models)
-        total_models = len(allowed_keys)
         dashboard_msg.append(f"  ✅ {reporting_count}/{total_models} models reporting")
         
         # Confidence label

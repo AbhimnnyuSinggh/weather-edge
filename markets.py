@@ -64,23 +64,23 @@ class MarketGroup:
 # ---------------------------------------------------------------------------
 CITIES = {
     # US Cities (10)
-    "nyc": {"icao": "KLGA", "city": "New York", "slug": "nyc", "lat": 40.7772, "lon": -73.8726, "tz": "America/New_York", "unit": "F", "is_coastal": True, "country": "US"},
-    "chi": {"icao": "KORD", "city": "Chicago", "slug": "chicago", "lat": 41.9742, "lon": -87.9073, "tz": "America/Chicago", "unit": "F", "is_coastal": False, "country": "US"},
-    "mia": {"icao": "KMIA", "city": "Miami", "slug": "miami", "lat": 25.7959, "lon": -80.2870, "tz": "America/New_York", "unit": "F", "is_coastal": True, "country": "US"},
-    "atl": {"icao": "KATL", "city": "Atlanta", "slug": "atlanta", "lat": 33.6407, "lon": -84.4277, "tz": "America/New_York", "unit": "F", "is_coastal": False, "country": "US"},
-    "den": {"icao": "KDEN", "city": "Denver", "slug": "denver", "lat": 39.8561, "lon": -104.6737, "tz": "America/Denver", "unit": "F", "is_coastal": False, "country": "US"},
-    "hou": {"icao": "KIAH", "city": "Houston", "slug": "houston", "lat": 29.9902, "lon": -95.3368, "tz": "America/Chicago", "unit": "F", "is_coastal": True, "country": "US"},
-    "phx": {"icao": "KPHX", "city": "Phoenix", "slug": "phoenix", "lat": 33.4373, "lon": -112.0078, "tz": "America/Phoenix", "unit": "F", "is_coastal": False, "country": "US"},
-    "dal": {"icao": "KDFW", "city": "Dallas", "slug": "dallas", "lat": 32.8998, "lon": -97.0403, "tz": "America/Chicago", "unit": "F", "is_coastal": False, "country": "US"},
-    "sea": {"icao": "KSEA", "city": "Seattle", "slug": "seattle", "lat": 47.4502, "lon": -122.3088, "tz": "America/Los_Angeles", "unit": "F", "is_coastal": True, "country": "US"},
-    "bos": {"icao": "KBOS", "city": "Boston", "slug": "boston", "lat": 42.3656, "lon": -71.0096, "tz": "America/New_York", "unit": "F", "is_coastal": True, "country": "US"},
+    "nyc": {"icao": "KLGA", "city": "New York", "slug": "nyc", "lat": 40.7772, "lon": -73.8726, "tz": "America/New_York", "unit": "F", "is_coastal": True, "country": "US", "models": ["gfs", "ecmwf", "icon", "gem", "jma", "hrrr", "nbm", "arpege", "ukmo", "bom"]},
+    "chi": {"icao": "KORD", "city": "Chicago", "slug": "chicago", "lat": 41.9742, "lon": -87.9073, "tz": "America/Chicago", "unit": "F", "is_coastal": False, "country": "US", "models": ["gfs", "ecmwf", "icon", "gem", "jma", "hrrr", "nbm", "arpege", "ukmo", "bom"]},
+    "mia": {"icao": "KMIA", "city": "Miami", "slug": "miami", "lat": 25.7959, "lon": -80.2870, "tz": "America/New_York", "unit": "F", "is_coastal": True, "country": "US", "models": ["gfs", "ecmwf", "icon", "gem", "jma", "hrrr", "nbm", "arpege", "ukmo", "bom"]},
+    "atl": {"icao": "KATL", "city": "Atlanta", "slug": "atlanta", "lat": 33.6407, "lon": -84.4277, "tz": "America/New_York", "unit": "F", "is_coastal": False, "country": "US", "models": ["gfs", "ecmwf", "icon", "gem", "jma", "hrrr", "nbm", "arpege", "ukmo", "bom"]},
+    "den": {"icao": "KDEN", "city": "Denver", "slug": "denver", "lat": 39.8561, "lon": -104.6737, "tz": "America/Denver", "unit": "F", "is_coastal": False, "country": "US", "models": ["gfs", "ecmwf", "icon", "gem", "jma", "hrrr", "nbm", "arpege", "ukmo", "bom"]},
+    "hou": {"icao": "KIAH", "city": "Houston", "slug": "houston", "lat": 29.9902, "lon": -95.3368, "tz": "America/Chicago", "unit": "F", "is_coastal": True, "country": "US", "models": ["gfs", "ecmwf", "icon", "gem", "jma", "hrrr", "nbm", "arpege", "ukmo", "bom"]},
+    "phx": {"icao": "KPHX", "city": "Phoenix", "slug": "phoenix", "lat": 33.4373, "lon": -112.0078, "tz": "America/Phoenix", "unit": "F", "is_coastal": False, "country": "US", "models": ["gfs", "ecmwf", "icon", "gem", "jma", "hrrr", "nbm", "arpege", "ukmo", "bom"]},
+    "dal": {"icao": "KDFW", "city": "Dallas", "slug": "dallas", "lat": 32.8998, "lon": -97.0403, "tz": "America/Chicago", "unit": "F", "is_coastal": False, "country": "US", "models": ["gfs", "ecmwf", "icon", "gem", "jma", "hrrr", "nbm", "arpege", "ukmo", "bom"]},
+    "sea": {"icao": "KSEA", "city": "Seattle", "slug": "seattle", "lat": 47.4502, "lon": -122.3088, "tz": "America/Los_Angeles", "unit": "F", "is_coastal": True, "country": "US", "models": ["gfs", "ecmwf", "icon", "gem", "jma", "hrrr", "nbm", "arpege", "ukmo", "bom"]},
+    "bos": {"icao": "KBOS", "city": "Boston", "slug": "boston", "lat": 42.3656, "lon": -71.0096, "tz": "America/New_York", "unit": "F", "is_coastal": True, "country": "US", "models": ["gfs", "ecmwf", "icon", "gem", "jma", "hrrr", "nbm", "arpege", "ukmo", "bom"]},
 
     # International Cities (5)
-    "sel": {"icao": "RKSI", "city": "Seoul", "slug": "seoul", "lat": 37.4692, "lon": 126.4505, "tz": "Asia/Seoul", "unit": "C", "is_coastal": True, "country": "KR"},
-    "lon": {"icao": "EGLC", "city": "London", "slug": "london", "lat": 51.5053, "lon": 0.0553, "tz": "Europe/London", "unit": "C", "is_coastal": False, "country": "UK"},
-    "tok": {"icao": "RJTT", "city": "Tokyo", "slug": "tokyo", "lat": 35.5494, "lon": 139.7798, "tz": "Asia/Tokyo", "unit": "C", "is_coastal": True, "country": "JP"},
-    "par": {"icao": "LFPG", "city": "Paris", "slug": "paris", "lat": 49.0097, "lon": 2.5479, "tz": "Europe/Paris", "unit": "C", "is_coastal": False, "country": "FR"},
-    "syd": {"icao": "YSSY", "city": "Sydney", "slug": "sydney", "lat": -33.9461, "lon": 151.1772, "tz": "Australia/Sydney", "unit": "C", "is_coastal": True, "country": "AU"},
+    "sel": {"icao": "RKSI", "city": "Seoul", "slug": "seoul", "lat": 37.4692, "lon": 126.4505, "tz": "Asia/Seoul", "unit": "C", "is_coastal": True, "country": "KR", "models": ["gfs", "ecmwf", "icon", "gem", "jma", "arpege", "ukmo", "bom"]},
+    "lon": {"icao": "EGLC", "city": "London", "slug": "london", "lat": 51.5053, "lon": 0.0553, "tz": "Europe/London", "unit": "C", "is_coastal": False, "country": "UK", "models": ["gfs", "ecmwf", "icon", "gem", "jma", "arpege", "ukmo", "bom"]},
+    "tok": {"icao": "RJTT", "city": "Tokyo", "slug": "tokyo", "lat": 35.5494, "lon": 139.7798, "tz": "Asia/Tokyo", "unit": "C", "is_coastal": True, "country": "JP", "models": ["gfs", "ecmwf", "icon", "gem", "jma", "arpege", "ukmo", "bom"]},
+    "par": {"icao": "LFPG", "city": "Paris", "slug": "paris", "lat": 49.0097, "lon": 2.5479, "tz": "Europe/Paris", "unit": "C", "is_coastal": False, "country": "FR", "models": ["gfs", "ecmwf", "icon", "gem", "jma", "arpege", "ukmo", "bom"]},
+    "syd": {"icao": "YSSY", "city": "Sydney", "slug": "sydney", "lat": -33.9461, "lon": 151.1772, "tz": "Australia/Sydney", "unit": "C", "is_coastal": True, "country": "AU", "models": ["gfs", "ecmwf", "icon", "gem", "jma", "arpege", "ukmo", "bom"]},
 }
 
 def _city_key_to_icao(city_key: str) -> Optional[str]:
@@ -138,6 +138,7 @@ async def _parse_event_async(event: dict, station: str, friendly_city: str, targ
     # Parse resolution source from description
     description = event.get("description", "")
     resolution_source = _parse_resolution_source(description)
+    event_slug = event.get("slug", "")
 
     # Determine unit from title or description
     title_lower = title.lower()
@@ -156,7 +157,7 @@ async def _parse_event_async(event: dict, station: str, friendly_city: str, targ
     # Parse markets (bins) within the event
     markets = event.get("markets", [])
     for market in markets:
-        mbin = _parse_market_bin(market, unit)
+        mbin = _parse_market_bin(market, unit, event_slug)
         if mbin:
             # Enforce 0-cent minimums and liquidity checks
             if not is_valid_price(mbin.yes_price, mbin.liquidity_usd):
@@ -189,7 +190,7 @@ def _parse_resolution_source(description: str) -> str:
 # ---------------------------------------------------------------------------
 # Market bin parsing
 # ---------------------------------------------------------------------------
-def _parse_market_bin(market: dict, default_unit: str) -> Optional[MarketBin]:
+def _parse_market_bin(market: dict, default_unit: str, event_slug: str = "") -> Optional[MarketBin]:
     """Parse a single market (bin) from the event."""
     market_id = str(market.get("conditionId", market.get("id", "")))
     question = market.get("question", "")
@@ -236,8 +237,7 @@ def _parse_market_bin(market: dict, default_unit: str) -> Optional[MarketBin]:
     liquidity = float(market.get("liquidity", 0) or 0)
 
     # Polymarket URL
-    slug = market.get("slug", "")
-    poly_url = f"https://polymarket.com/event/{slug}" if slug else ""
+    poly_url = f"https://polymarket.com/event/{event_slug}" if event_slug else ""
 
     return MarketBin(
         market_id=market_id,
