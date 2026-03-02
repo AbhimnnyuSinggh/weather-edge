@@ -205,6 +205,7 @@ async def _fetch_open_meteo(station: str, lat: float, lon: float,
             ssl_context.check_hostname = False
             ssl_context.verify_mode = ssl.CERT_NONE
             async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context)) as session:
+                logger.debug(f"OM URL PAYLOAD: {fetch_url} | PARAMS: {params}")
                 async with session.get(
                     fetch_url, params=params,
                     timeout=aiohttp.ClientTimeout(total=15)
@@ -257,7 +258,7 @@ async def _fetch_open_meteo(station: str, lat: float, lon: float,
         model_specific_key = f"temperature_2m_max_{api_name}"
         if model_specific_key in daily:
             model_daily = daily[model_specific_key]
-        elif "temperature_2m_max" in daily:
+        elif len(model_list) == 1 and "temperature_2m_max" in daily:
             model_daily = daily["temperature_2m_max"]
         else:
             model_daily = None
