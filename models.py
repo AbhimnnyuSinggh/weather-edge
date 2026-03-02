@@ -333,16 +333,17 @@ async def _fetch_open_meteo(station: str, lat: float, lon: float,
             )
             
             # Prioritize today's forecast, but allow tomorrow's if today's is missing (useful for Asian markets at night UTC)
-            if station_cfg.get("target_date"): # Check if the function was called with a specific target_date
-                # Allow a 1-day drift from Render's UTC to handle Asian/US boundaries
+            if station_cfg.get("target_date"):
                 requested_date = station_cfg["target_date"]
-                if target_date == requested_date or abs((target_date - requested_date).days) <= 1:
-                    # If we already have an EXACT match, don't overwrite it with a +-1 day drift
-                    if model_key in results and results[model_key].target_date == requested_date:
-                        pass
-                    else:
+                
+                # Check 1: Is this the exact date requested?
+                if target_date == requested_date:
+                    results[model_key] = forecast
+                # Check 2: If it's a 1-day drift, only save it if we DON'T ALREADY have the exact date
+                elif abs((target_date - requested_date).days) <= 1:
+                    if model_key not in results or results[model_key].target_date != requested_date:
                         results[model_key] = forecast
-            else: # Fallback to old logic if no specific target_date was requested
+            else:
                 if model_key not in results or target_date in (today_local, tomorrow_local):
                     # If we already have a forecast and it's for today, don't overwrite it with tomorrow
                     if model_key in results and results[model_key].target_date == today_local and target_date == tomorrow_local:
