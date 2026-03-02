@@ -125,6 +125,22 @@ async def fetch_all_stations(stations_cfg: dict) -> Dict[str, Dict[str, ModelFor
         if ensemble_result:
             results[icao]["ensemble"] = ensemble_result
 
+        # --- DATABASE FALLBACK ---
+        # If any live API failed (e.g. Rate Limit 429), recover the last known forecast from the DB
+        cached_db = None
+        expected_models = open_meteo_models + ["ensemble", "visual_crossing"]
+        if cfg.get("country") == "US":
+            expected_models.extend(["nws", "noaa_mos"])
+            
+        for m in expected_models:
+            if m not in results[icao]:
+                if cached_db is None:
+                    cached_db = await get_latest_from_db({icao: cfg})
+                if icao in cached_db and m in cached_db[icao]:
+                    logger.warning("Recovering missing model %s for %s from DB cache", m, icao)
+                    results[icao][m] = cached_db[icao][m]
+        # -------------------------
+
     # Log source summary
     sources_used = set()
     for icao_data in results.values():
