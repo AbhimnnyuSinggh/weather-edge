@@ -351,11 +351,77 @@ async def _fetch_open_meteo(station: str, lat: float, lon: float,
                     else:
                         results[model_key] = forecast
 
-            # Store in database (protected against missing stations by try/except inside store_forecast)
+            # Store in database
             await tracker.store_forecast(
                 station, target_date, model_key,
                 raw_high_c, raw_high_f, corrected_c, corrected_f,
             )
+
+    # -------------------------------------------------------------
+    # SILENT NULL-PAYLOAD DETECTION
+    # If customer-api.open-meteo.com returns 200 OK but all arrays 
+    # were 'null' (due to unauthorized API keys), results is empty.
+    # We must instantly pivot to the free tier and try again!
+    # -------------------------------------------------------------
+    if not results and api_key and fetch_url != OPEN_METEO_URL:
+        logger.warning(f"Open-Meteo returned silent nulls for {station}. Falling back to Free Tier.")
+        api_key = None
+        fetch_url = OPEN_METEO_URL
+        if "apikey" in params:
+            del params["apikey"]
+        # Immediately execute the free tier call without looping logic recursion to prevent infinite loops
+        try:
+            ssl_context = ssl.create_default_context()
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+            async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context)) as session:
+                async with session.get(fetch_url, params=params, timeout=15) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        hourly = data.get("hourly", {})
+                        daily = data.get("daily", {})
+                        
+                        for model_key, api_name in model_map.items():
+                            if model_key not in model_list: continue
+                            hourly_computed = {}
+                            model_hourly_key = f"temperature_2m_{api_name}"
+                            if hourly and model_hourly_key in hourly and "time" in hourly:
+                                for i, t_str in enumerate(hourly["time"]):
+                                    if i >= len(hourly[model_hourly_key]) or hourly[model_hourly_key][i] is None: continue
+                                    d_str, h_str = t_str.split("T")
+                                    if 6 <= int(h_str.split(":")[0]) <= 20:
+                                        dt_date = date.fromisoformat(d_str)
+                                        hourly_computed.setdefault(dt_date, []).append(float(hourly[model_hourly_key][i]))
+                                for d in hourly_computed: hourly_computed[d] = max(hourly_computed[d])
+
+                            daily_computed = {}
+                            model_daily_key = f"temperature_2m_max_{api_name}"
+                            if model_daily_key in daily and daily.get("time"):
+                                for i, d_str in enumerate(daily["time"]):
+                                    if i < len(daily[model_daily_key]) and daily[model_daily_key][i] is not None:
+                                        daily_computed[date.fromisoformat(d_str)] = float(daily[model_daily_key][i])
+                            
+                            for target_date in sorted(list(set(hourly_computed.keys()) | set(daily_computed.keys()))):
+                                raw_high_c = hourly_computed.get(target_date) or daily_computed.get(target_date)
+                                raw_high_f = raw_high_c * 9.0 / 5.0 + 32.0
+                                bias_c = await _get_bias(station, model_key, station_cfg)
+                                corrected_c = raw_high_c - bias_c
+                                corrected_f = corrected_c * 9.0 / 5.0 + 32.0
+                                weight = await _get_weight(station, model_key)
+                                forecast = ModelForecast(station, model_key, target_date, raw_high_c, raw_high_f, corrected_c, corrected_f, weight)
+
+                                if station_cfg.get("target_date"):
+                                    requested_date = station_cfg["target_date"]
+                                    if target_date == requested_date: results[model_key] = forecast
+                                    elif abs((target_date - requested_date).days) <= 1:
+                                        if model_key not in results or results[model_key].target_date != requested_date: results[model_key] = forecast
+                                else:
+                                    if model_key not in results or target_date in (today_local, tomorrow_local):
+                                        if model_key in results and results[model_key].target_date == today_local and target_date == tomorrow_local: pass
+                                        else: results[model_key] = forecast
+                                await tracker.store_forecast(station, target_date, model_key, raw_high_c, raw_high_f, corrected_c, corrected_f)
+        except Exception as e:
+            logger.error(f"Free tier fallback failed: {e}")
 
     return results
 
