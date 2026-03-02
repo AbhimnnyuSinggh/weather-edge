@@ -416,6 +416,27 @@ async def cmd_city_analysis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         
         ensemble_members = await models_mod.fetch_ensemble(city_config["lat"], city_config["lon"], unit)
 
+        # ─────────────────────────────────────────────────────────────
+        # THE REALITY FLOOR (MATHEMATICAL CLAMP TO OBSERVED METAR)
+        # If today's known high is already 81°F, any model predicting 
+        # 78°F is objectively wrong and must be clamped to reality.
+        # ─────────────────────────────────────────────────────────────
+        if target_date == now_local.date() and high_so_far_val is not None:
+            for mn, fc in models_data.items():
+                if unit == "F":
+                    if fc.bias_corrected_f < high_so_far_val:
+                        fc.bias_corrected_f = float(high_so_far_val)
+                        fc.bias_corrected_c = (float(high_so_far_val) - 32.0) * 5.0 / 9.0
+                        fc.raw_high_f = max(fc.raw_high_f, float(high_so_far_val))
+                else:
+                    if fc.bias_corrected_c < high_so_far_val:
+                        fc.bias_corrected_c = float(high_so_far_val)
+                        fc.bias_corrected_f = float(high_so_far_val) * 9.0 / 5.0 + 32.0
+                        fc.raw_high_c = max(fc.raw_high_c, float(high_so_far_val))
+                        
+            if ensemble_members:
+                ensemble_members = [max(m, float(high_so_far_val)) for m in ensemble_members]
+
         # 5. Calculate Predicted Daily High
         predicted_high = await models_mod.calculate_daily_high(
             models_data, station_metar, metar_trend, ensemble_members, now_local.hour, icao, unit
