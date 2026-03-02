@@ -773,6 +773,9 @@ async def _fetch_open_meteo_ensemble(station: str, lat: float, lon: float,
                 headers={"User-Agent": USER_AGENT},
                 timeout=aiohttp.ClientTimeout(total=15),
             ) as resp:
+                if resp.status == 429:
+                    logger.warning("Open-Meteo Ensemble HTTP 429: Rate limit hit. Defaulting to 1.0 curve.")
+                    return None
                 if resp.status != 200:
                     return None
                 data = await resp.json()
