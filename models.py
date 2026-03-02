@@ -88,7 +88,7 @@ def reset_rate_limits():
     _rate_limit_status = {}
 
 
-async def fetch_all_stations(stations_cfg: dict) -> Dict[str, Dict[str, ModelForecast]]:
+async def fetch_all_stations(stations_cfg: dict, use_cache_fallback: bool = True) -> Dict[str, Dict[str, ModelForecast]]:
     """
     For each active station, fetch forecasts from ALL available sources.
     Returns nested dict: {station: {model_name: ModelForecast}}
@@ -134,20 +134,23 @@ async def fetch_all_stations(stations_cfg: dict) -> Dict[str, Dict[str, ModelFor
 
         # --- DATABASE FALLBACK ---
         # If any live API failed (e.g. Rate Limit 429), recover the last known forecast from the DB
-        cached_db = None
-        expected_models = [m for m in open_meteo_models if m not in ("hrrr", "nbm")]
-        expected_models.extend(["ensemble", "visual_crossing"])
-        if cfg.get("country") == "US":
-            expected_models.extend(["nws", "noaa_mos", "hrrr", "nbm"])
-            
-        for m in expected_models:
-            if m not in results[icao]:
-                if cached_db is None:
-                    cached_db = await get_latest_from_db({icao: cfg})
-                if icao in cached_db and m in cached_db[icao]:
-                    logger.warning("Recovering missing model %s for %s from DB cache", m, icao)
-                    results[icao][m] = cached_db[icao][m]
+        # Bypassed completely if use_cache_fallback is False (e.g. live dashboard commands)
+        if use_cache_fallback:
+            cached_db = None
+            expected_models = [m for m in open_meteo_models if m not in ("hrrr", "nbm")]
+            expected_models.extend(["ensemble", "visual_crossing"])
+            if cfg.get("country") == "US":
+                expected_models.extend(["nws", "noaa_mos", "hrrr", "nbm"])
+                
+            for m in expected_models:
+                if m not in results[icao]:
+                    if cached_db is None:
+                        cached_db = await get_latest_from_db({icao: cfg})
+                    if icao in cached_db and m in cached_db[icao]:
+                        logger.warning("Recovering missing model %s for %s from DB cache", m, icao)
+                        results[icao][m] = cached_db[icao][m]
         # -------------------------
+
 
     # Log source summary
     sources_used = set()
@@ -222,11 +225,18 @@ async def _fetch_open_meteo(station: str, lat: float, lon: float,
                             
                     if resp.status in (400, 401, 403):
                         logger.error(
-                            "Open-Meteo HTTP %d for %s — check OPEN_METEO_API_KEY",
+                            "Open-Meteo HTTP %d for %s — checking fallback to free tier",
                             resp.status, station
                         )
-                        _rate_limit_status["open_meteo"] = "limited"
-                        return results
+                        if api_key and fetch_url != OPEN_METEO_URL:
+                            logger.info("Falling back to free Open-Meteo API for %s", station)
+                            fetch_url = OPEN_METEO_URL
+                            if "apikey" in params:
+                                del params["apikey"]
+                            continue
+                        else:
+                            _rate_limit_status["open_meteo"] = "limited"
+                            return results
 
                     elif resp.status != 200:
                         logger.error("Open-Meteo HTTP %d for %s", resp.status, station)

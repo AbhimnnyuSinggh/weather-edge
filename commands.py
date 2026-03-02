@@ -411,7 +411,7 @@ async def cmd_city_analysis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
         # 4. Fetch All Models ON DEMAND
         city_config["target_date"] = target_date
-        models_raw = await models_mod.fetch_all_stations({icao: city_config})
+        models_raw = await models_mod.fetch_all_stations({icao: city_config}, use_cache_fallback=False)
         models_data = models_raw.get(icao, {})
         
         ensemble_members = await models_mod.fetch_ensemble(city_config["lat"], city_config["lon"], unit)
