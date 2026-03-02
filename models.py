@@ -242,9 +242,10 @@ async def _fetch_open_meteo(station: str, lat: float, lon: float,
                 logger.error("Open-Meteo final error for %s: %s", station, e)
                 return results
 
+    hourly = data.get("hourly", {})
     daily = data.get("daily", {})
-    if not daily:
-        logger.error("Open-Meteo returned no daily data for %s", station)
+    if not daily and not hourly:
+        logger.error("Open-Meteo returned no daily or hourly data for %s", station)
         return results
 
     tz_name = station_cfg.get("tz", "UTC")
@@ -255,27 +256,53 @@ async def _fetch_open_meteo(station: str, lat: float, lon: float,
         if model_key not in model_list:
             continue
 
-        model_specific_key = f"temperature_2m_max_{api_name}"
-        if model_specific_key in daily:
-            model_daily = daily[model_specific_key]
+        # 1. Try to compute from hourly data first
+        hourly_computed = {} # date -> max_temp_c
+        model_hourly_key = f"temperature_2m_{api_name}"
+        if hourly and model_hourly_key in hourly and "time" in hourly:
+            times = hourly["time"]
+            temps = hourly[model_hourly_key]
+            for i, t_str in enumerate(times):
+                if i >= len(temps) or temps[i] is None:
+                    continue
+                d_str, h_str = t_str.split("T")
+                h_val = int(h_str.split(":")[0])
+                if 6 <= h_val <= 20: # 06:00 to 20:00 local
+                    dt_date = date.fromisoformat(d_str)
+                    if dt_date not in hourly_computed:
+                        hourly_computed[dt_date] = []
+                    hourly_computed[dt_date].append(float(temps[i]))
+            for d in hourly_computed:
+                hourly_computed[d] = max(hourly_computed[d])
+
+        # 2. Extract from daily data as fallback
+        daily_computed = {}
+        model_daily_key = f"temperature_2m_max_{api_name}"
+        if model_daily_key in daily:
+            model_daily = daily[model_daily_key]
         elif len(model_list) == 1 and "temperature_2m_max" in daily:
             model_daily = daily["temperature_2m_max"]
         else:
             model_daily = None
 
-        if not model_daily or not daily.get("time"):
+        if model_daily and daily.get("time"):
+            for i, d_str in enumerate(daily["time"]):
+                if i >= len(model_daily) or model_daily[i] is None:
+                    continue
+                dt_date = date.fromisoformat(d_str)
+                daily_computed[dt_date] = float(model_daily[i])
+
+        all_dates = set(hourly_computed.keys()) | set(daily_computed.keys())
+        if not all_dates:
             logger.debug("No data for model %s (%s) at station %s", model_key, api_name, station)
             continue
 
-        dates = daily["time"]
-        for i, date_str in enumerate(dates):
-            if i >= len(model_daily) or model_daily[i] is None:
-                continue
+        for target_date in sorted(list(all_dates)):
+            raw_high_c = hourly_computed.get(target_date)
+            if raw_high_c is None:
+                raw_high_c = daily_computed.get(target_date)
 
-            target_date = date.fromisoformat(date_str)
-            raw_high_c = float(model_daily[i])
             raw_high_f = raw_high_c * 9.0 / 5.0 + 32.0
-
             # Apply bias correction
             bias_c = await _get_bias(station, model_key, station_cfg)
             corrected_c = raw_high_c - bias_c
@@ -341,67 +368,102 @@ async def _fetch_nws(station: str, lat: float, lon: float,
                 points_data = await resp.json()
 
             forecast_url = points_data.get("properties", {}).get("forecast")
-            if not forecast_url:
+            hourly_url = points_data.get("properties", {}).get("forecastHourly")
+            if not forecast_url and not hourly_url:
                 return None
 
-            # Step 2: Get the actual forecast
-            async with session.get(
-                forecast_url,
-                headers={"User-Agent": USER_AGENT},
-                timeout=aiohttp.ClientTimeout(total=15),
-            ) as resp:
-                if resp.status != 200:
-                    logger.error("NWS forecast HTTP %d for %s", resp.status, station)
-                    return None
-                forecast_data = await resp.json()
+            temp_c_final = None
+            target_date_final = None
+
+            # Step 2: Try Hourly Aggregation First
+            if hourly_url:
+                async with session.get(
+                    hourly_url,
+                    headers={"User-Agent": USER_AGENT},
+                    timeout=aiohttp.ClientTimeout(total=15),
+                ) as resp:
+                    if resp.status == 200:
+                        hourly_data = await resp.json()
+                        periods = hourly_data.get("properties", {}).get("periods", [])
+                        tz_name = station_cfg.get("tz", "UTC")
+                        today_local = datetime.now(pytz.timezone(tz_name)).date()
+                        
+                        hourly_temps = []
+                        for period in periods:
+                            start_time = period.get("startTime", "")
+                            try:
+                                p_date = date.fromisoformat(start_time[:10])
+                                # NWS uses proper ISO8601 with offset, so grab the hour directly
+                                p_hour = int(start_time[11:13])
+                                if p_date == today_local and 6 <= p_hour <= 20:
+                                    t_val = float(period.get("temperature", 0))
+                                    t_unit = period.get("temperatureUnit", "F")
+                                    if t_unit == "F":
+                                        t_val = (t_val - 32.0) * 5.0 / 9.0
+                                    hourly_temps.append(t_val)
+                            except Exception:
+                                pass
+                                
+                        if hourly_temps:
+                            temp_c_final = max(hourly_temps)
+                            target_date_final = today_local
+
+            # Step 3: Fallback to standard period forecast
+            if temp_c_final is None and forecast_url:
+                async with session.get(
+                    forecast_url,
+                    headers={"User-Agent": USER_AGENT},
+                    timeout=aiohttp.ClientTimeout(total=15),
+                ) as resp:
+                    if resp.status == 200:
+                        forecast_data = await resp.json()
+                        periods = forecast_data.get("properties", {}).get("periods", [])
+                        for period in periods:
+                            if period.get("isDaytime"):
+                                temp_f = float(period.get("temperature", 0))
+                                temp_unit = period.get("temperatureUnit", "F")
+                                if temp_unit == "F":
+                                    temp_c_final = (temp_f - 32.0) * 5.0 / 9.0
+                                else:
+                                    temp_c_final = temp_f
+
+                                start_time = period.get("startTime", "")
+                                try:
+                                    target_date_final = date.fromisoformat(start_time[:10])
+                                except (ValueError, IndexError):
+                                    tz_name = station_cfg.get("tz", "UTC")
+                                    target_date_final = datetime.now(pytz.timezone(tz_name)).date()
+                                break
 
     except Exception as e:
         logger.error("NWS error for %s: %s", station, e)
         return None
 
-    # Parse periods — find daytime period with high temperature
-    periods = forecast_data.get("properties", {}).get("periods", [])
-    for period in periods:
-        if period.get("isDaytime"):
-            temp_f = float(period.get("temperature", 0))
-            temp_unit = period.get("temperatureUnit", "F")
-            if temp_unit == "C":
-                temp_c = temp_f
-                temp_f = temp_c * 9.0 / 5.0 + 32.0
-            else:
-                temp_c = (temp_f - 32.0) * 5.0 / 9.0
+    if temp_c_final is None or target_date_final is None:
+        return None
 
-            # Parse date from period
-            start_time = period.get("startTime", "")
-            try:
-                target_date = date.fromisoformat(start_time[:10])
-            except (ValueError, IndexError):
-                tz_name = station_cfg.get("tz", "UTC")
-                target_date = datetime.now(pytz.timezone(tz_name)).date()
+    temp_f_final = temp_c_final * 9.0 / 5.0 + 32.0
+    bias_c = await _get_bias(station, "nws", station_cfg)
+    corrected_c = temp_c_final - bias_c
+    corrected_f = corrected_c * 9.0 / 5.0 + 32.0
+    weight = await _get_weight(station, "nws")
 
-            bias_c = await _get_bias(station, "nws", station_cfg)
-            corrected_c = temp_c - bias_c
-            corrected_f = corrected_c * 9.0 / 5.0 + 32.0
-            weight = await _get_weight(station, "nws")
+    forecast = ModelForecast(
+        station=station,
+        model_name="nws",
+        target_date=target_date_final,
+        raw_high_c=temp_c_final,
+        raw_high_f=temp_f_final,
+        bias_corrected_c=corrected_c,
+        bias_corrected_f=corrected_f,
+        weight=weight,
+    )
 
-            forecast = ModelForecast(
-                station=station,
-                model_name="nws",
-                target_date=target_date,
-                raw_high_c=temp_c,
-                raw_high_f=temp_f,
-                bias_corrected_c=corrected_c,
-                bias_corrected_f=corrected_f,
-                weight=weight,
-            )
-
-            await tracker.store_forecast(
-                station, target_date, "nws",
-                temp_c, temp_f, corrected_c, corrected_f,
-            )
-            return forecast
-
-    return None
+    await tracker.store_forecast(
+        station, target_date_final, "nws",
+        temp_c_final, temp_f_final, corrected_c, corrected_f,
+    )
+    return forecast
 
 
     return None
@@ -518,11 +580,11 @@ async def _fetch_visual_crossing(station: str, lat: float, lon: float,
         url = f"https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline/{lat},{lon}/today"
         params = {
             "unitGroup": "us", # always fetch F
-            "include": "days",
+            "include": "days,hours",
             "key": api_key,
             "contentType": "json"
         }
-        
+
         ssl_context = ssl.create_default_context()
         ssl_context.check_hostname = False
         ssl_context.verify_mode = ssl.CERT_NONE
@@ -541,12 +603,32 @@ async def _fetch_visual_crossing(station: str, lat: float, lon: float,
         days = data.get("days", [])
         if not days:
             return None
-            
-        raw_high_f = float(days[0].get("tempmax"))
-        raw_high_c = (raw_high_f - 32.0) * 5.0 / 9.0
 
         tz_name = station_cfg.get("tz", "UTC")
         target_date = datetime.now(pytz.timezone(tz_name)).date()
+
+        raw_high_f = None
+        hours = days[0].get("hours", [])
+        if hours:
+            hourly_temps = []
+            for h in hours:
+                dt_str = h.get("datetime", "")
+                try:
+                    h_val = int(dt_str.split(":")[0])
+                    if 6 <= h_val <= 20:
+                        t_val = h.get("temp")
+                        if t_val is not None:
+                            hourly_temps.append(float(t_val))
+                except (ValueError, IndexError):
+                    pass
+            
+            if hourly_temps:
+                raw_high_f = max(hourly_temps)
+
+        if raw_high_f is None:
+            raw_high_f = float(days[0].get("tempmax"))
+
+        raw_high_c = (raw_high_f - 32.0) * 5.0 / 9.0
 
         bias_c = await _get_bias(station, "visual_crossing", station_cfg)
         corrected_c = raw_high_c - bias_c
