@@ -539,6 +539,7 @@ async def cmd_city_analysis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         total_models_expected = base_om_count + len(m3_keys)
         
         reporting_count = len(display_m1) + len(display_m2) + len(display_m3)
+        valid_models = [models_data[k] for k in all_active_keys if models_data.get(k)]
         
         # Calculate expected based on intl vs US
         if city_config.get("country", "US") == "US":
