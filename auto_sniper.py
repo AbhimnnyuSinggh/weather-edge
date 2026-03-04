@@ -128,9 +128,14 @@ async def run_sniper_loop():
                 if balance < opp["cost"]:
                     continue # Try the next one (it might be cheaper, e.g. < $2.00)
                     
-                # In production, this pings Gamma API /order endpoint. We simulate the secure lock here:
-                # success = await wallet.place_gamma_order(opp["market_id"], side="NO", shares=opp["shares"], limit_price=opp["no_price"])
-                success = True 
+                # Execute LIVE Order on the Polymarket CLOB. 
+                # This breaks the paper-trading barrier and executes real capital.
+                success = await wallet.place_clob_order(
+                    market_id=opp["market_id"], 
+                    side="NO", 
+                    shares=opp["shares"], 
+                    limit_price=opp["no_price"]
+                )
                 
                 if success:
                     balance -= opp["cost"]
