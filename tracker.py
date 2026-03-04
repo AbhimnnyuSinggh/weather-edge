@@ -248,19 +248,66 @@ async def store_trade(alert: dict):
             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
             """,
             alert["station"],
-            alert["target_date"],
+            alert.get("target_date"),
             alert["bin_label"],
             alert["side"],
             alert["trade_type"],
             alert["entry_price"],
             alert["shares"],
             alert["cost"],
-            alert.get("confidence_score"),
+            alert["confidence_score"],
             json.dumps(alert.get("confidence_components", {})),
             alert.get("ev"),
-            alert.get("alert_id"),
+            alert.get("alert_id")
         )
 
+# ---------------------------------------------------------------------------
+# Auto-Sniper Prevent-Duplicate Tracking
+# ---------------------------------------------------------------------------
+async def has_auto_traded_today(station: str, bin_label: str) -> bool:
+    """Check if the auto-sniper already purchased this specific bin today."""
+    pool = await get_pool()
+    tz = pytz.timezone("America/New_York") # Standardize boundary checks
+    today = datetime.now(tz).date()
+    
+    async with pool.acquire() as conn:
+        record = await conn.fetchrow(
+            """
+            SELECT 1 FROM auto_trades_today
+            WHERE station=$1 AND bin_label=$2 AND trade_date=$3
+            """,
+            station, bin_label, today
+        )
+        return bool(record)
+
+async def record_auto_trade(station: str, bin_label: str, side: str, shares: float, cost: float):
+    """Log an auto-sniper execution specifically to prevent duplicate 15-minute executions."""
+    pool = await get_pool()
+    tz = pytz.timezone("America/New_York")
+    today = datetime.now(tz).date()
+    
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO auto_trades_today (station, bin_label, trade_date, side, shares, cost)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            ON CONFLICT DO NOTHING
+            """,
+            station, bin_label, today, side, shares, cost
+        )
+        
+        # We also push this to the main trades leger so it exists universally
+        uid = str(uuid.uuid4())
+        await conn.execute(
+            """
+            INSERT INTO trades
+                (station, target_date, bin_label, side, trade_type,
+                 entry_price, shares, cost, confidence_score, alert_id)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+            """,
+            station, today, bin_label, side, "auto_sniper",
+            cost / max(1, shares), shares, cost, 100, uid
+        )
 
 async def get_open_trades() -> List[asyncpg.Record]:
     pool = await get_pool()

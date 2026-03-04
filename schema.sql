@@ -150,6 +150,19 @@ CREATE TABLE IF NOT EXISTS alerts_log (
     sent_at TIMESTAMP DEFAULT NOW()
 );
 
+-- Auto-Sniper Log: Prevent duplicate 15-minute executions on the exact same bin
+CREATE TABLE IF NOT EXISTS auto_trades_today (
+    id SERIAL PRIMARY KEY,
+    station TEXT NOT NULL REFERENCES stations(icao),
+    bin_label TEXT NOT NULL,
+    trade_date DATE NOT NULL,
+    side TEXT NOT NULL,
+    shares REAL,
+    cost REAL,
+    executed_at TIMESTAMP DEFAULT NOW(),
+    UNIQUE(station, bin_label, trade_date)
+);
+
 -- Capital reservations: temporary holds to prevent race conditions
 CREATE TABLE IF NOT EXISTS capital_reservations (
     id SERIAL PRIMARY KEY,

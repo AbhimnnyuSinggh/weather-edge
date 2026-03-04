@@ -182,6 +182,15 @@ async def cmd_today(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         logger.error("/today error: %s", e)
         await update.message.reply_text(f"❌ Error: {e}")
 
+async def cmd_ledger(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Show the real-time Polymarket Accountability Ledger for Auto-Sniper performance."""
+    try:
+        import ledger
+        report = await ledger.generate_ledger_report()
+        await update.message.reply_text(report, parse_mode="Markdown")
+    except Exception as e:
+        logger.error("/ledger error: %s", e)
+        await update.message.reply_text(f"❌ Error compiling ledger: {e}")
 
 async def cmd_data(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Export all data as CSV zip file."""
@@ -229,6 +238,7 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "/stations — Active stations with METAR & biases\n"
         "/week — Weekly performance report\n"
         "/today — Today's trades and activity\n"
+        "/ledger — Autonomous execution tracker (Trailing ROI)\n"
         "/data — Export all data as CSV zip\n"
         "/pause — Pause alerts (bot keeps scanning)\n"
         "/resume — Resume alerts\n"
@@ -753,6 +763,7 @@ def register_handlers(app: Application):
     app.add_handler(CommandHandler("stations", cmd_stations))
     app.add_handler(CommandHandler("week", cmd_week))
     app.add_handler(CommandHandler("today", cmd_today))
+    app.add_handler(CommandHandler("ledger", cmd_ledger))
     app.add_handler(CommandHandler("data", cmd_data))
     app.add_handler(CommandHandler("pause", cmd_pause))
     app.add_handler(CommandHandler("resume", cmd_resume))

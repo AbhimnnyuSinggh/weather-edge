@@ -176,12 +176,14 @@ async def run_all():
     await alerts.send_startup_message(ws, list(stations_cfg.keys()))
     logger.info("Startup complete — zero background API polling initialized.")
     
-    # 5. Run health server + telegram polling + physical edge scanner forever
+    # 5. Run health server + telegram polling + physical edge scanner + auto sniper forever
     import metar_scanner
+    import auto_sniper
     await asyncio.gather(
         run_health_server(),
         idle_forever(),
         metar_scanner.start_background_loop(),
+        auto_sniper.run_sniper_loop(),
     )
 
 
