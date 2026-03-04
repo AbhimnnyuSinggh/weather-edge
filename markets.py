@@ -44,6 +44,7 @@ class BinInfo:
 class MarketBin:
     market_id: str
     token_id: str
+    no_token_id: str = ""
     bin: BinInfo
     yes_price: float
     volume_24h: float = 0.0
@@ -220,15 +221,18 @@ def _parse_market_bin(market: dict, default_unit: str, event_slug: str = "") -> 
         # Fallback: check market-level price
         yes_price = float(market.get("bestBid", 0) or 0)
 
-    # Token IDs
+    # Token IDs (clobTokenIds is usually [YES_TOKEN_ID, NO_TOKEN_ID])
     tokens = market.get("clobTokenIds", "")
     token_id = ""
+    no_token_id = ""
     if tokens:
         try:
             import json
             token_list = json.loads(tokens)
-            if token_list:
+            if token_list and len(token_list) > 0:
                 token_id = str(token_list[0])
+            if token_list and len(token_list) > 1:
+                no_token_id = str(token_list[1])
         except (json.JSONDecodeError, ValueError):
             pass
 
@@ -242,6 +246,7 @@ def _parse_market_bin(market: dict, default_unit: str, event_slug: str = "") -> 
     return MarketBin(
         market_id=market_id,
         token_id=token_id,
+        no_token_id=no_token_id,
         bin=bin_info,
         yes_price=yes_price,
         volume_24h=volume,

@@ -94,6 +94,7 @@ async def calculate_opportunities() -> list:
                     "city": city_config["city"],
                     "bin_label": mbin.bin.label,
                     "market_id": mbin.market_id,
+                    "token_id": mbin.no_token_id,
                     "no_price": no_price,
                     "shares": shares_to_buy,
                     "cost": actual_cost,
@@ -130,8 +131,9 @@ async def run_sniper_loop():
                     
                 # Execute LIVE Order on the Polymarket CLOB. 
                 # This breaks the paper-trading barrier and executes real capital.
+                # Crucially, we MUST pass the specific NO token ID, not the broad market condition ID.
                 success = await wallet.place_clob_order(
-                    market_id=opp["market_id"], 
+                    token_id=opp["token_id"], 
                     side="NO", 
                     shares=opp["shares"], 
                     limit_price=opp["no_price"]

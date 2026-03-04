@@ -457,7 +457,7 @@ async def get_capital_summary() -> dict:
 # ---------------------------------------------------------------------------
 # Order Execution (LIVE TRADING: NO PAPER TRADING BEYOND THIS POINT)
 # ---------------------------------------------------------------------------
-async def place_clob_order(market_id: str, side: str, shares: float, limit_price: float) -> bool:
+async def place_clob_order(token_id: str, side: str, shares: float, limit_price: float) -> bool:
     """
     Submits a LIVE blockchain order to Polymarket's CLOB API.
     Replaces paper-trading simulations with direct capital execution.
@@ -476,7 +476,8 @@ async def place_clob_order(market_id: str, side: str, shares: float, limit_price
         
         # PolyMarket requires mapping YES/NO to BUY/SELL states depending on the Token ID parity.
         # For weather bins, selling NO is technically buying the NO token or shorting the YES token.
-        order_args = OrderArgs(token_id=market_id, price=limit_price, size=shares, side="BUY")
+        # Since we are executing on the specific NO Token ID parsed from the API, side is simply "BUY".
+        order_args = OrderArgs(token_id=token_id, price=limit_price, size=shares, side="BUY")
         resp = client.create_and_post_order(order_args)
         
         logger.info(f"LIVE EXECUTION INITIATED: Booking {shares} {side} shares @ {limit_price}¢ on PolyMarket CLOB.")
