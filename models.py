@@ -40,7 +40,7 @@ DEFAULT_MAE = {
     # Existing
     "gfs": 1.8, "ecmwf": 1.5, "icon": 2.0, "gem": 2.2, "jma": 2.0,
     "nws": 1.5, "noaa_mos": 1.3,
-    "visual_crossing": 2.0, "ensemble": 1.0,
+    "visual_crossing": 2.0, "ensemble": 1.0, "tomorrow": 1.5,
     # New
     "hrrr": 1.2,
     "nbm": 1.1,
@@ -121,6 +121,12 @@ async def fetch_all_stations(stations_cfg: dict, use_cache_fallback: bool = True
             if vc_result:
                 results[icao]["visual_crossing"] = vc_result
 
+        # 3.5) Tomorrow.io
+        if _rate_limit_status.get("tomorrow") != "limited":
+            tomorrow_result = await _fetch_tomorrow_io(icao, lat, lon, cfg)
+            if tomorrow_result:
+                results[icao]["tomorrow"] = tomorrow_result
+
         # 4) NOAA MOS (US stations only)
         if cfg.get("country") == "US":
             mos_result = await _fetch_noaa_mos(icao, cfg)
@@ -138,7 +144,7 @@ async def fetch_all_stations(stations_cfg: dict, use_cache_fallback: bool = True
         if use_cache_fallback:
             cached_db = None
             expected_models = [m for m in open_meteo_models if m not in ("hrrr", "nbm")]
-            expected_models.extend(["ensemble", "visual_crossing"])
+            expected_models.extend(["ensemble", "visual_crossing", "tomorrow"])
             if cfg.get("country") == "US":
                 expected_models.extend(["nws", "noaa_mos", "hrrr", "nbm"])
                 
@@ -656,6 +662,95 @@ async def _fetch_visual_crossing(station: str, lat: float, lon: float,
         logger.error("Visual Crossing error for %s: %s", station, e)
         return None
 
+
+# ---------------------------------------------------------------------------
+# Tomorrow.io fetch (requires key)
+# ---------------------------------------------------------------------------
+async def _fetch_tomorrow_io(station: str, lat: float, lon: float,
+                                 station_cfg: dict) -> Optional[ModelForecast]:
+    """Fetch hourly data from Tomorrow.io API and compute daily high."""
+    import os
+    api_key = os.environ.get("TOMORROWIO_API_KEY")
+    if not api_key:
+        return None
+
+    try:
+        url = "https://api.tomorrow.io/v4/timelines"
+        params = {
+            "location": f"{lat},{lon}",
+            "fields": ["temperature"],
+            "timesteps": "1h",
+            "units": "imperial",
+            "apikey": api_key
+        }
+
+        ssl_context = ssl.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context)) as session:
+            async with session.get(
+                url, params=params,
+                headers={"User-Agent": USER_AGENT},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status != 200:
+                    logger.debug("Tomorrow.io HTTP %d for %s", resp.status, station)
+                    if resp.status == 429:
+                        _rate_limit_status["tomorrow"] = "limited"
+                    return None
+                data = await resp.json()
+
+        intervals = data.get("data", {}).get("timelines", [])
+        if not intervals:
+            return None
+        intervals = intervals[0].get("intervals", [])
+
+        tz_name = station_cfg.get("tz", "UTC")
+        target_date = station_cfg.get("target_date", datetime.now(pytz.timezone(tz_name)).date())
+
+        hourly_temps = []
+        for interval in intervals:
+            dt_str = interval.get("startTime", "")
+            try:
+                dt_utc = datetime.strptime(dt_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.UTC)
+                dt_local = dt_utc.astimezone(pytz.timezone(tz_name))
+                
+                if dt_local.date() == target_date:
+                    if 6 <= dt_local.hour <= 20:
+                        t_val = interval.get("values", {}).get("temperature")
+                        if t_val is not None:
+                            hourly_temps.append(float(t_val))
+            except (ValueError, IndexError):
+                pass
+        
+        if not hourly_temps:
+            return None
+
+        raw_high_f = max(hourly_temps)
+        raw_high_c = (raw_high_f - 32.0) * 5.0 / 9.0
+
+        bias_c = await _get_bias(station, "tomorrow", station_cfg)
+        corrected_c = raw_high_c - bias_c
+        corrected_f = corrected_c * 9.0 / 5.0 + 32.0
+        weight = await _get_weight(station, "tomorrow")
+
+        forecast = ModelForecast(
+            station=station, model_name="tomorrow",
+            target_date=target_date,
+            raw_high_c=raw_high_c, raw_high_f=raw_high_f,
+            bias_corrected_c=corrected_c, bias_corrected_f=corrected_f,
+            weight=weight,
+        )
+        await tracker.store_forecast(
+            station, target_date, "tomorrow",
+            raw_high_c, raw_high_f, corrected_c, corrected_f,
+        )
+        return forecast
+
+    except Exception as e:
+        logger.error("Tomorrow.io error for %s: %s", station, e)
+        return None
 
 # ---------------------------------------------------------------------------
 # NOAA MOS fetch (free, no key, US stations only)

@@ -507,7 +507,7 @@ async def cmd_city_analysis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "gfs": "GFS", "ecmwf": "ECMWF", "icon": "ICON", "gem": "GEM", 
             "jma": "JMA", "hrrr": "HRRR", "nbm": "NBM", "arpege": "ARP",
             "ukmo": "UKMO", "bom": "BOM", "nws": "NWS", "noaa_mos": "MOS", 
-            "visual_crossing": "VC", "ensemble": "ENS"
+            "visual_crossing": "VC", "ensemble": "ENS", "tomorrow": "TMRW"
         }
         
         m1, m2, m3 = [], [], []
@@ -518,21 +518,21 @@ async def cmd_city_analysis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         m1_keys = [m for m in ["gfs", "ecmwf", "icon", "gem", "jma"] if m in supported_models]
         m2_keys = [m for m in ["nws", "noaa_mos", "hrrr", "nbm", "arpege", "ukmo", "bom", "visual_crossing"] if m in supported_models]
         
-        # Always allow NWS, MOS, VC if they are present for US cities, otherwise just VC
+        # Always allow NWS, MOS, VC, Tomorrow if they are present for US cities, otherwise VC/Tomorrow
         is_us = city_config.get("country", "US") == "US"
-        m3_keys = ["nws", "noaa_mos", "visual_crossing"] if is_us else ["visual_crossing"]
+        m3_keys = ["nws", "noaa_mos", "visual_crossing", "tomorrow"] if is_us else ["visual_crossing", "tomorrow"]
         
         # Consolidate into 3 actual rows for display formatting based on the total active set
         all_active_keys = [k for k, v in models_data.items() if v]
         
         display_m1 = [k for k in ["gfs", "ecmwf", "icon", "gem", "jma"] if k in all_active_keys]
         display_m2 = [k for k in ["hrrr", "nbm", "arpege", "ukmo", "bom"] if k in all_active_keys]
-        display_m3 = [k for k in ["nws", "noaa_mos", "visual_crossing"] if k in all_active_keys]
+        display_m3 = [k for k in ["nws", "noaa_mos", "visual_crossing", "tomorrow"] if k in all_active_keys]
 
         def fmt_temp(mn):
             fc = models_data.get(mn)
             if not fc: return "—"
-            if mn in ["nws", "noaa_mos", "visual_crossing"] and is_us:
+            if mn in ["nws", "noaa_mos", "visual_crossing", "tomorrow"] and is_us:
                 return f"{fc.bias_corrected_f:.0f}°F"
             if unit == "C":
                 return f"{fc.bias_corrected_c:.0f}°C"
@@ -546,7 +546,7 @@ async def cmd_city_analysis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             if mn in supported_models:
                 m2.append(f"{ABBR.get(mn, mn)}: {fmt_temp(mn)}")
                 
-        for mn in ["nws", "noaa_mos", "visual_crossing"]:
+        for mn in ["nws", "noaa_mos", "visual_crossing", "tomorrow"]:
             if mn in m3_keys:  # m3_keys handles the US check implicitly
                 m3.append(f"{ABBR.get(mn, mn)}: {fmt_temp(mn)}")
             
