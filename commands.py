@@ -592,6 +592,14 @@ async def cmd_city_analysis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if trusted_temps and len(trusted_temps) >= 3:
             std_dev = np.std(trusted_temps)                  # standard deviation of the cluster
             uncertainty = std_dev * 1.5                      # 1.5× for safety (~90% coverage)
+            
+            # --- FIX #2: Ensemble Spread Refinement (10th-90th percentile) ---
+            if "ensemble" in models_data and models_data["ensemble"]:
+                ensemble_temps = getattr(models_data["ensemble"], "raw_ensemble_f", []) if unit == "F" else getattr(models_data["ensemble"], "raw_ensemble_c", [])
+                if len(ensemble_temps) > 10:
+                    p10, p90 = np.percentile(ensemble_temps, [10, 90])
+                    ensemble_spread = (p90 - p10) / 2.0
+                    uncertainty = min(uncertainty, ensemble_spread * 1.15)  # slight buffer 
         else:
             uncertainty = 3.0                                # safe fallback if too few models
             
@@ -605,6 +613,15 @@ async def cmd_city_analysis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             hours_left = max(0, 24 - local_hour)
             max_warming = 0.5 if unit == "F" else 0.3
             ceiling = current_high + (max_warming * hours_left)
+            
+            # --- FIX #1: METAR Velocity Boost (Aggressive Afternoon Tightening) ---
+            if local_hour >= 14 and metar and hasattr(metar, 'velocity') and metar.velocity:
+                vel = metar.velocity.velocity_1h_f if unit == "F" else metar.velocity.velocity_1h
+                trend_hours = metar.velocity.trend_hours
+                if vel is not None and vel < -0.6 and trend_hours >= 3.0:
+                    ceiling_reduction = abs(vel) * (hours_left * 0.65)
+                    ceiling -= ceiling_reduction
+                    ceiling = max(ceiling, current_high) # Never drop below known reality
             
             range_low = max(current_high, predicted_high - uncertainty)
             range_high = min(ceiling, predicted_high + uncertainty)
