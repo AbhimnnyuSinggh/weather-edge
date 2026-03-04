@@ -118,40 +118,55 @@ def _wallet_address() -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
-# Polymarket Gamma API — fetch true cash collateral
+# Polymarket L2 API — fetch true cash collateral
 # ---------------------------------------------------------------------------
 async def fetch_cash_balance() -> Optional[float]:
     """
-    Fetches the precise USDC.e Collateral balance from the Polymarket Gamma API.
-    Replaces the buggy data-api /value endpoint and avoids the strict API Credential 
-    requirements of the L2 py-clob-client.
+    Fetches the precise L2 USDC.e Collateral balance from the Smart Contract using py-clob-client.
+    Dynamically derives Level 2 API credentials to bypass 401 Unauthorized errors without 
+    requiring manual user API passwords.
     """
-    addr = _wallet_address()
-    if not addr:
-        return None
+    def _execute_sync():
+        private_key = os.environ.get("POLY_PRIVATE_KEY")
+        if not private_key:
+            logger.warning("POLY_PRIVATE_KEY missing from environment. Cannot fetch L2 Balance.")
+            return None
+            
+        try:
+            from py_clob_client.client import ClobClient
+            from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
+            
+            # Start client with Level 1 authorization only (Private Key)
+            client = ClobClient("https://clob.polymarket.com", chain_id=137, signature_type=1, key=private_key)
+            
+            # Dynamically derive Level 2 Credentials from the Polymarket Network
+            creds = client.create_or_derive_api_creds()
+            if not creds:
+                logger.warning("Could not derive Level 2 API Credentials from Private Key.")
+                return None
+                
+            # Assign derived credentials to elevate client to Level 2
+            client.set_api_creds(creds)
+            
+            # Fetch Blockchain USDC.e Balance
+            balance_info = client.get_balance_allowance(BalanceAllowanceParams(asset_type=AssetType.COLLATERAL))
+            
+            if isinstance(balance_info, dict) and "balance" in balance_info:
+                bal_str = balance_info.get("balance", "0")
+                return float(bal_str) / 1_000_000.0
+                
+            logger.warning("L2 Balance fetch returned malformed info.")
+            return None
+            
+        except Exception as e:
+            logger.error(f"CLOB Balance Error: {e}")
+            return None
 
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                f"https://gamma-api.polymarket.com/users/{addr}",
-                headers={"User-Agent": USER_AGENT},
-                timeout=aiohttp.ClientTimeout(total=10),
-            ) as resp:
-                if resp.status != 200:
-                    logger.warning("Gamma API /users HTTP %d", resp.status)
-                    return None
-                data = await resp.json()
-
-        # The Gamma API schema nests the balance under proxyWallet
-        proxy_wallet = data.get("proxyWallet")
-        if proxy_wallet and "usdBalance" in proxy_wallet:
-            return float(proxy_wallet["usdBalance"])
-            
-        logger.warning("Gamma API response missing proxyWallet.usdBalance")
-        return None
-
+        import asyncio
+        return await asyncio.to_thread(_execute_sync)
     except Exception as e:
-        logger.error("Gamma API Cash Balance error: %s", e)
+        logger.error("CLOB L2 Cash Balance error: %s", e)
         return None
 
 
