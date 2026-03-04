@@ -37,10 +37,12 @@ class RoundingEdge:
 
 @dataclass
 class VelocityData:
-    velocity: float          # °C/hr (or °F/hr depending on unit)
+    velocity: float          # °C/hr
+    velocity_1h_f: float     # °F/hr (required for AutoSniper & Dashboard logic)
     acceleration: float      # change in velocity
     trend: str               # 'rising', 'falling', 'flat'
     consecutive_falling: int
+    trend_hours: float       # Time falling in hours (required for AutoSniper physics lock)
     day_high: float          # max temp recorded today
     day_high_f: float
     high_time: Optional[datetime] = None
@@ -266,15 +268,37 @@ async def calculate_velocity(station: str, station_tz: str,
     now_utc = datetime.utcnow()
     hours_since_high = (now_utc - high_time).total_seconds() / 3600.0
 
+    tz = pytz.timezone(station_tz)
+    now = datetime.now(tz)
+    tz_now = pytz.utc.localize(now_utc).astimezone(tz)
+
+    if (now - tz_now.replace(hour=0, minute=0, second=0)).total_seconds() < 0:
+        day_high = temps_c[-1]
+        day_high_f = temps_f[-1]
+    else:
+        day_high = day_high_c if unit == "C" else day_high_f
+    hours_since = round(hours_since_high, 2)
+
+    # Calculate °F velocity per hour
+    # We take the difference over the last 1-3 hours
+    vel_1h_f = 0.0
+    if len(temps_f) > 1:
+        dt_hours = (times[-1] - times[max(0, len(times)-4)]).total_seconds() / 3600.0 or 1.0
+        vel_1h_f = (temps_f[-1] - temps_f[max(0, len(temps_f)-4)]) / dt_hours
+        
+    trend_hours = consecutive_falling
+
     return VelocityData(
         velocity=round(velocity, 2),
+        velocity_1h_f=round(vel_1h_f, 2),
         acceleration=round(acceleration, 3),
-        trend=trend,
+        trend=trend_str,
         consecutive_falling=consecutive_falling,
-        day_high=day_high_c if unit == "C" else day_high_f,
+        trend_hours=trend_hours,
+        day_high=day_high,
         day_high_f=day_high_f,
         high_time=high_time,
-        hours_since_high=round(hours_since_high, 2),
+        hours_since_high=hours_since,
     )
 
 
