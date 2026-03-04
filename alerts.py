@@ -405,6 +405,15 @@ async def send_startup_message(wallet_state, stations_list: List[str]):
     await _send(msg)
 
 
+async def send_tactical_edge_alert(text: str):
+    """
+    Format and send a high-priority, isolated Edge Detection alert 
+    (Sunbeam Spike or Wind-Vector Shift) triggered by the background METAR scanner.
+    """
+    # Simply wrap the generic send function
+    await _send(text)
+
+
 # ---------------------------------------------------------------------------
 # Reports
 # ---------------------------------------------------------------------------
