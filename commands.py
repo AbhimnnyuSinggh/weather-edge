@@ -586,7 +586,9 @@ async def cmd_city_analysis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 within_2 += 1
                 
             # Range metric (Only use trusted models for cluster analysis)
-            if getattr(f, "weight", 1.0) > 0.1:
+            # Filter out severely penalized models AND extreme mathematical outliers
+            diff = abs(temp - predicted_high)
+            if getattr(f, "weight", 1.0) > 0.1 and diff < 3.5:
                 trusted_temps.append(temp)
                 
         if trusted_temps and len(trusted_temps) >= 3:
