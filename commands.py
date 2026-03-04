@@ -571,17 +571,46 @@ async def cmd_city_analysis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             
         dashboard_msg.append(f"  ✅ {reporting_count}/{total_models} models reporting")
         
-        # Confidence label & Model Spread
+        # Confidence label & Model Spread (Standard Deviation Cluster Analysis)
+        import numpy as np
+        
         within_2 = 0
-        valid_temps = []
+        trusted_temps = []
+        
         for f in valid_models:
             temp = f.bias_corrected_f if unit == "F" else f.bias_corrected_c
-            valid_temps.append(temp)
+            
+            # Confidence metric (within 2 degrees of Bayesian Final)
             diff = abs(temp - predicted_high)
             if diff <= 2.0:
                 within_2 += 1
                 
-        margin = (max(valid_temps) - min(valid_temps)) / 2.0 if valid_temps else 0.0
+            # Range metric (Only use trusted models for cluster analysis)
+            if getattr(f, "weight", 1.0) > 0.1:
+                trusted_temps.append(temp)
+                
+        if trusted_temps and len(trusted_temps) >= 3:
+            std_dev = np.std(trusted_temps)                  # standard deviation of the cluster
+            uncertainty = std_dev * 1.5                      # 1.5× for safety (~90% coverage)
+        else:
+            uncertainty = 3.0                                # safe fallback if too few models
+            
+        # Enforce physical reality limits for the UI String
+        current_high = None
+        if metar and hasattr(metar, 'velocity') and metar.velocity:
+            current_high = metar.velocity.day_high_f if unit == "F" else metar.velocity.day_high
+            
+        if current_high:
+            local_hour = metar.local_timestamp.hour if getattr(metar, "local_timestamp", None) else 12
+            hours_left = max(0, 24 - local_hour)
+            max_warming = 0.5 if unit == "F" else 0.3
+            ceiling = current_high + (max_warming * hours_left)
+            
+            range_low = max(current_high, predicted_high - uncertainty)
+            range_high = min(ceiling, predicted_high + uncertainty)
+            final_range = f"{range_low:.1f}–{range_high:.1f}°{unit} (±{uncertainty:.1f}°)"
+        else:
+            final_range = f"{(predicted_high - uncertainty):.1f}–{(predicted_high + uncertainty):.1f}°{unit} (±{uncertainty:.1f}°)"
                 
         conf_frac = within_2 / max(1, reporting_count)
         if conf_frac >= 0.85: conf_lbl = "HIGH"
@@ -591,7 +620,7 @@ async def cmd_city_analysis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         
         dashboard_msg.extend([
             "",
-            f"━━ PREDICTED DAILY HIGH: {predicted_high:.1f}°{unit} (±{margin:.1f}°) ━━",
+            f"━━ PREDICTED DAILY HIGH: {predicted_high:.1f}°{unit} | {final_range} ━━",
             f"  Bin: {market_link} | Confidence: {conf_lbl} ({detail})"
         ])
         
