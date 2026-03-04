@@ -606,12 +606,10 @@ async def cmd_city_analysis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             uncertainty = 3.0                                # safe fallback if too few models
             
         # Enforce physical reality limits for the UI String
-        current_high = None
-        if station_metar and hasattr(station_metar, 'velocity') and station_metar.velocity:
-            current_high = station_metar.velocity.day_high_f if unit == "F" else station_metar.velocity.day_high
+        current_high = high_so_far_val
             
         if current_high:
-            local_hour = station_metar.local_timestamp.hour if getattr(station_metar, "local_timestamp", None) else 12
+            local_hour = now_local.hour
             hours_left = max(0, 24 - local_hour)
             max_warming = 0.5 if unit == "F" else 0.3
             ceiling = current_high + (max_warming * hours_left)
