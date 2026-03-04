@@ -44,12 +44,12 @@ class BinInfo:
 class MarketBin:
     market_id: str
     token_id: str
-    no_token_id: str = ""
     bin: BinInfo
     yes_price: float
     volume_24h: float = 0.0
     liquidity_usd: float = 0.0
     polymarket_url: str = ""
+    no_token_id: str = ""
 
 @dataclass
 class MarketGroup:
