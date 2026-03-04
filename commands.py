@@ -571,12 +571,17 @@ async def cmd_city_analysis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             
         dashboard_msg.append(f"  ✅ {reporting_count}/{total_models} models reporting")
         
-        # Confidence label
+        # Confidence label & Model Spread
         within_2 = 0
+        valid_temps = []
         for f in valid_models:
-            diff = abs(f.bias_corrected_f - predicted_high) if unit == "F" else abs(f.bias_corrected_c - predicted_high)
+            temp = f.bias_corrected_f if unit == "F" else f.bias_corrected_c
+            valid_temps.append(temp)
+            diff = abs(temp - predicted_high)
             if diff <= 2.0:
                 within_2 += 1
+                
+        margin = (max(valid_temps) - min(valid_temps)) / 2.0 if valid_temps else 0.0
                 
         conf_frac = within_2 / max(1, reporting_count)
         if conf_frac >= 0.85: conf_lbl = "HIGH"
@@ -586,7 +591,7 @@ async def cmd_city_analysis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         
         dashboard_msg.extend([
             "",
-            f"━━ PREDICTED DAILY HIGH: {predicted_high:.1f}°{unit} ━━",
+            f"━━ PREDICTED DAILY HIGH: {predicted_high:.1f}°{unit} (±{margin:.1f}°) ━━",
             f"  Bin: {market_link} | Confidence: {conf_lbl} ({detail})"
         ])
         

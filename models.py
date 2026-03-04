@@ -1186,16 +1186,17 @@ def dewpoint_adjustment(current_temp: float, dewpoint: float, predicted_high: fl
     spread = current_temp - dewpoint
     
     if unit == "C":
-        narrow_threshold = 3.0
-    else:
         narrow_threshold = 5.0
+        max_additional_rise = 1.0
+    else:
+        narrow_threshold = 9.0
+        max_additional_rise = 1.8
     
     if spread < narrow_threshold:
         # Very humid — cap warming potential
-        max_additional_rise = 5 if unit == "F" else 3
         capped = current_temp + max_additional_rise
         if predicted_high > capped:
-            return capped, f"⚠️ High humidity (dewpoint {dewpoint}°{unit}) caps warming"
+            return capped, f"⚠️ High humidity (dewpoint {dewpoint:.1f}°{unit}) caps warming"
     
     return predicted_high, None
 
