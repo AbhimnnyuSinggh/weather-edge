@@ -118,37 +118,44 @@ def _wallet_address() -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
-# Polymarket Data API — fetch portfolio value
+# Polymarket L2 API — fetch true cash collateral
 # ---------------------------------------------------------------------------
-async def fetch_portfolio_value() -> Optional[float]:
+async def fetch_cash_balance() -> Optional[float]:
     """
-    GET /value?user={address}
-    Returns total portfolio value (positions + cash).
+    Fetches the precise L2 USDC.e Collateral balance from the Smart Contract using py-clob-client.
+    Replaces the buggy/delayed data-api /value endpoint.
     """
-    addr = _wallet_address()
-    if not addr:
-        return None
+    def _get_balance_sync():
+        from py_clob_client.client import ClobClient
+        from py_clob_client.clob_types import ApiCreds, BalanceAllowanceParams, AssetType
+        
+        key = os.environ.get("POLY_PRIVATE_KEY")
+        api_key = os.environ.get("POLY_API_KEY")
+        api_secret = os.environ.get("POLY_API_SECRET")
+        api_passphrase = os.environ.get("POLY_PASSPHRASE")
+
+        if not all([key, api_key, api_secret, api_passphrase]):
+            logger.warning("Missing API Creds for CLOB balance fetch.")
+            return None
+
+        try:
+            creds = ApiCreds(api_key=api_key, api_secret=api_secret, api_passphrase=api_passphrase)
+            client = ClobClient("https://clob.polymarket.com", chain_id=137, signature_type=1, key=key, creds=creds)
+
+            balance_info = client.get_balance_allowance(BalanceAllowanceParams(asset_type=AssetType.COLLATERAL))
+            if isinstance(balance_info, dict) and "balance" in balance_info:
+                bal_str = balance_info.get("balance", "0")
+                return float(bal_str) / 1_000_000.0
+            return None
+        except Exception as e:
+            logger.error(f"CLOB Balance Error: {e}")
+            return None
 
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                f"{DATA_API_BASE}/value",
-                params={"user": addr},
-                headers={"User-Agent": USER_AGENT},
-                timeout=aiohttp.ClientTimeout(total=10),
-            ) as resp:
-                if resp.status != 200:
-                    logger.warning("Data API /value HTTP %d", resp.status)
-                    return None
-                data = await resp.json()
-
-        # Response is a list with one item: [{"user": "0x...", "value": 15.57}]
-        if isinstance(data, list) and data:
-            return float(data[0].get("value", 0))
-        return None
-
+        import asyncio
+        return await asyncio.to_thread(_get_balance_sync)
     except Exception as e:
-        logger.error("Data API /value error: %s", e)
+        logger.error("CLOB L2 Cash Balance error: %s", e)
         return None
 
 
@@ -280,14 +287,14 @@ async def sync() -> WalletState:
     Fetch real wallet state from Polymarket Data API.
     Falls back to internal DB tracking if API unavailable.
     """
-    # Try Data API first
-    total_value = await fetch_portfolio_value()
+    # Try L2 API first
+    cash_balance = await fetch_cash_balance()
     positions = await fetch_positions()
 
-    if total_value is not None:
-        # API success — calculate cash balance
+    if cash_balance is not None:
+        # API success — calculate total portfolio value
         positions_value = sum(p.current_value for p in positions)
-        cash_balance = max(0, total_value - positions_value)
+        total_value = cash_balance + positions_value
 
         state = WalletState(
             balance=cash_balance,
