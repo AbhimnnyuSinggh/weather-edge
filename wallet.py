@@ -471,13 +471,13 @@ async def place_clob_order(market_id: str, side: str, shares: float, limit_price
         
     try:
         # The user must `pip install py-clob-client` to utilize Polymarket's cryptographic signer.
-        # from py_clob_client.client import ClobClient, OrderArgs
-        # client = ClobClient("https://clob.polymarket.com", chain_id=137, signature_type=1, private_key=private_key)
+        from py_clob_client.client import ClobClient, OrderArgs
+        client = ClobClient("https://clob.polymarket.com", chain_id=137, signature_type=1, private_key=private_key)
         
         # PolyMarket requires mapping YES/NO to BUY/SELL states depending on the Token ID parity.
         # For weather bins, selling NO is technically buying the NO token or shorting the YES token.
-        # order_args = OrderArgs(token_id=market_id, price=limit_price, size=shares, side="BUY")
-        # resp = client.create_and_post_order(order_args)
+        order_args = OrderArgs(token_id=market_id, price=limit_price, size=shares, side="BUY")
+        resp = client.create_and_post_order(order_args)
         
         logger.info(f"LIVE EXECUTION INITIATED: Booking {shares} {side} shares @ {limit_price}¢ on PolyMarket CLOB.")
         return True 
