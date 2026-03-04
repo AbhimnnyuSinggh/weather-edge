@@ -17,124 +17,51 @@ from models import ModelForecast
 logger = logging.getLogger("distribution")
 
 
-def calculate_bin_probabilities(models_data, bins, ensemble_members=None, metar_high=None, unit="C"):
+def calculate_bin_probabilities(bins, predicted_high, sigma, metar_high=None):
     """
-    Two methods combined:
-    Method A: Normal distribution per model (each centered on ITS OWN forecast)
-    Method B: Ensemble counting (if 31 GFS members available)
-    Final = 60% ensemble + 40% model curves (if ensemble available)
-           = 100% model curves (if no ensemble)
+    Strict PDF: probability mass only for bins correctly enclosing the predicted mean.
+    No cumulative stacking — mutually exclusive.
+    Uses the dashboard's `predicted_high` and `sigma` to generate a flawless bell curve.
     """
-    
-    DEFAULT_MAE = {
-        # Existing
-        "gfs": 1.8, "ecmwf": 1.5, "icon": 2.0, "gem": 2.2, "jma": 2.0,
-        "nws": 1.5, "noaa_mos": 1.3, "visual_crossing": 2.0,
-        # New
-        "hrrr": 1.2,
-        "nbm": 1.1,
-        "arpege": 2.0,
-        "ukmo": 1.8,
-        "bom": 2.2,
-    }
-    
     def norm_cdf(z):
         return 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
+        
+    probs = {}
     
-    # ── METHOD A: Normal distribution per model ──
-    forecasts = []
-    for name, forecast in models_data.items():
-        try:
-            temp = forecast.bias_corrected_c if unit == "C" else forecast.bias_corrected_f
-            if temp is None:
-                continue
-            mae = DEFAULT_MAE.get(name, 2.0)
-            weight = 1.0 / max(0.5, mae)
-            forecasts.append((temp, weight, mae))
-        except AttributeError:
+    # We use the finely tuned predicted_high as our mean, and sigma as our std_dev
+    mean = predicted_high
+    sigma = max(0.5, sigma) # Fallback to prevent divide-by-zero
+    
+    for mbin in bins:
+        bin_low = _get_bin_low(mbin)
+        bin_high = _get_bin_high(mbin)
+        bin_label = _get_bin_label(mbin)
+        
+        if not bin_label:
             continue
-    
-    model_probs = {}
-    if forecasts:
-        total_weight = sum(w for _, w, _ in forecasts)
-        
-        for mbin in bins:
-            bin_low = _get_bin_low(mbin)
-            bin_high = _get_bin_high(mbin)
-            bin_label = _get_bin_label(mbin)
             
+        z_low = (bin_low - mean) / sigma if bin_low is not None else -10
+        z_high = (bin_high - mean) / sigma if bin_high is not None else 10
+        
+        # Integrate PDF over the mutually exclusive bin boundaries
+        prob = norm_cdf(z_high) - norm_cdf(z_low)
+        
+        # METAR floor logic: theoretically impossible to be below current day's reality
+        if metar_high is not None and bin_high is not None and bin_high <= metar_high:
             prob = 0.0
-            for temp, weight, mae in forecasts:
-                # CRITICAL FIX: Use the FULL MAE as std_dev, not mae * 0.35
-                std_dev = max(1.0, mae)
-                
-                # CRITICAL FIX: Center on THIS MODEL'S forecast, NOT predicted_high
-                center = temp
-                
-                z_low = (bin_low - center) / std_dev if bin_low is not None else -10
-                z_high = (bin_high - center) / std_dev if bin_high is not None else 10
-                model_prob = norm_cdf(z_high) - norm_cdf(z_low)
-                
-                prob += model_prob * (weight / total_weight)
             
-            if bin_label:
-                model_probs[bin_label] = prob
-    
-    # ── METHOD B: Ensemble counting (31 GFS members) ──
-    ensemble_probs = {}
-    if ensemble_members and len(ensemble_members) >= 20:
-        for mbin in bins:
-            bin_low = _get_bin_low(mbin)
-            bin_high = _get_bin_high(mbin)
-            bin_label = _get_bin_label(mbin)
-            
-            count = 0
-            for member_temp in ensemble_members:
-                if member_temp is None:
-                    continue
-                in_bin = True
-                if bin_low is not None and member_temp < bin_low:
-                    in_bin = False
-                if bin_high is not None and member_temp >= bin_high:
-                    in_bin = False
-                if in_bin:
-                    count += 1
-            
-            if bin_label:
-                ensemble_probs[bin_label] = count / len([m for m in ensemble_members if m is not None])
-    
-    # ── COMBINE ──
-    final_probs = {}
-    all_labels = set(list(model_probs.keys()) + list(ensemble_probs.keys()))
-    
-    for label in all_labels:
-        mp = model_probs.get(label, 0)
-        ep = ensemble_probs.get(label, 0)
+        probs[bin_label] = max(0.0, prob)
         
-        if ensemble_probs:
-            # 60% ensemble + 40% model curves
-            final_probs[label] = 0.6 * ep + 0.4 * mp
-        else:
-            final_probs[label] = mp
-    
-    # METAR floor: zero out bins below observed high
-    if metar_high is not None:
-        for mbin in bins:
-            bin_high = _get_bin_high(mbin)
-            bin_label = _get_bin_label(mbin)
-            if bin_label and bin_high is not None and bin_high < metar_high:
-                final_probs[bin_label] = 0.0
-    
-    # Normalize to sum to 1.0
-    total = sum(final_probs.values())
+    # Normalize to sum to 1.0 (strict mutual exclusivity)
+    total = sum(probs.values())
     if total > 0:
-        for label in final_probs:
-            final_probs[label] = round(final_probs[label] / total, 4)
+        for label in probs:
+            probs[label] = round(probs[label] / total, 4)
     else:
-        for label in final_probs:
-            final_probs[label] = 0.0
+        for label in probs:
+            probs[label] = 0.0
             
-    return final_probs
+    return probs
 
 # Helper functions to extract bin properties
 def _get_bin_low(mbin):

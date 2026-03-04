@@ -442,6 +442,29 @@ async def cmd_city_analysis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             models_data, station_metar, metar_trend, ensemble_members, now_local.hour, icao, unit
         )
         
+        # --- CALCULATE UNCERTAINTY SIGMA FOR PDF ---
+        import numpy as np
+        all_act = [k for k, v in models_data.items() if v]
+        val_mods = [models_data[k] for k in all_act if models_data.get(k)]
+        trusted_t = []
+        for f in val_mods:
+            temp = f.bias_corrected_f if unit == "F" else f.bias_corrected_c
+            diff = abs(temp - predicted_high)
+            if getattr(f, "weight", 1.0) > 0.1 and diff < 3.5:
+                trusted_t.append(temp)
+                
+        if trusted_t and len(trusted_t) >= 3:
+            std_dev = np.std(trusted_t)
+            uncertainty = std_dev * 1.5
+            if "ensemble" in models_data and models_data["ensemble"]:
+                ensemble_temps = getattr(models_data["ensemble"], "raw_ensemble_f", []) if unit == "F" else getattr(models_data["ensemble"], "raw_ensemble_c", [])
+                if len(ensemble_temps) > 10:
+                    p10, p90 = np.percentile(ensemble_temps, [10, 90])
+                    ensemble_spread = (p90 - p10) / 2.0
+                    uncertainty = min(uncertainty, ensemble_spread * 1.15)
+        else:
+            uncertainty = 3.0
+
         m_high_floor = "No"
         if high_so_far_val and predicted_high == high_so_far_val:
             m_high_floor = "Yes"
@@ -450,11 +473,10 @@ async def cmd_city_analysis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         import distribution
         import signals
         probs = distribution.calculate_bin_probabilities(
-            models_data, 
             market_group.bins if market_group else [], 
-            ensemble_members,
-            high_so_far_val, 
-            unit
+            predicted_high,
+            uncertainty,
+            high_so_far_val
         )
         
         # 8. Signals & Trades
@@ -584,26 +606,7 @@ async def cmd_city_analysis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             diff = abs(temp - predicted_high)
             if diff <= 2.0:
                 within_2 += 1
-                
-            # Range metric (Only use trusted models for cluster analysis)
-            # Filter out severely penalized models AND extreme mathematical outliers
-            diff = abs(temp - predicted_high)
-            if getattr(f, "weight", 1.0) > 0.1 and diff < 3.5:
-                trusted_temps.append(temp)
-                
-        if trusted_temps and len(trusted_temps) >= 3:
-            std_dev = np.std(trusted_temps)                  # standard deviation of the cluster
-            uncertainty = std_dev * 1.5                      # 1.5× for safety (~90% coverage)
-            
-            # --- FIX #2: Ensemble Spread Refinement (10th-90th percentile) ---
-            if "ensemble" in models_data and models_data["ensemble"]:
-                ensemble_temps = getattr(models_data["ensemble"], "raw_ensemble_f", []) if unit == "F" else getattr(models_data["ensemble"], "raw_ensemble_c", [])
-                if len(ensemble_temps) > 10:
-                    p10, p90 = np.percentile(ensemble_temps, [10, 90])
-                    ensemble_spread = (p90 - p10) / 2.0
-                    uncertainty = min(uncertainty, ensemble_spread * 1.15)  # slight buffer 
-        else:
-            uncertainty = 3.0                                # safe fallback if too few models
+                # (Uncertainty calculation mathematically hoisted above)
             
         # Enforce physical reality limits for the UI String
         current_high = high_so_far_val
