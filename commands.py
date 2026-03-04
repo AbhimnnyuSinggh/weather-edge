@@ -607,19 +607,19 @@ async def cmd_city_analysis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             
         # Enforce physical reality limits for the UI String
         current_high = None
-        if metar and hasattr(metar, 'velocity') and metar.velocity:
-            current_high = metar.velocity.day_high_f if unit == "F" else metar.velocity.day_high
+        if station_metar and hasattr(station_metar, 'velocity') and station_metar.velocity:
+            current_high = station_metar.velocity.day_high_f if unit == "F" else station_metar.velocity.day_high
             
         if current_high:
-            local_hour = metar.local_timestamp.hour if getattr(metar, "local_timestamp", None) else 12
+            local_hour = station_metar.local_timestamp.hour if getattr(station_metar, "local_timestamp", None) else 12
             hours_left = max(0, 24 - local_hour)
             max_warming = 0.5 if unit == "F" else 0.3
             ceiling = current_high + (max_warming * hours_left)
             
             # --- FIX #1: METAR Velocity Boost (Aggressive Afternoon Tightening) ---
-            if local_hour >= 14 and metar and hasattr(metar, 'velocity') and metar.velocity:
-                vel = metar.velocity.velocity_1h_f if unit == "F" else metar.velocity.velocity_1h
-                trend_hours = metar.velocity.trend_hours
+            if local_hour >= 14 and station_metar and hasattr(station_metar, 'velocity') and station_metar.velocity:
+                vel = station_metar.velocity.velocity_1h_f if unit == "F" else station_metar.velocity.velocity_1h
+                trend_hours = station_metar.velocity.trend_hours
                 if vel is not None and vel < -0.6 and trend_hours >= 3.0:
                     ceiling_reduction = abs(vel) * (hours_left * 0.65)
                     ceiling -= ceiling_reduction
