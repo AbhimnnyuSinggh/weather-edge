@@ -118,44 +118,40 @@ def _wallet_address() -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
-# Polymarket L2 API — fetch true cash collateral
+# Polymarket Gamma API — fetch true cash collateral
 # ---------------------------------------------------------------------------
 async def fetch_cash_balance() -> Optional[float]:
     """
-    Fetches the precise L2 USDC.e Collateral balance from the Smart Contract using py-clob-client.
-    Replaces the buggy/delayed data-api /value endpoint.
+    Fetches the precise USDC.e Collateral balance from the Polymarket Gamma API.
+    Replaces the buggy data-api /value endpoint and avoids the strict API Credential 
+    requirements of the L2 py-clob-client.
     """
-    def _get_balance_sync():
-        from py_clob_client.client import ClobClient
-        from py_clob_client.clob_types import ApiCreds, BalanceAllowanceParams, AssetType
-        
-        key = os.environ.get("POLY_PRIVATE_KEY")
-        api_key = os.environ.get("POLY_API_KEY")
-        api_secret = os.environ.get("POLY_API_SECRET")
-        api_passphrase = os.environ.get("POLY_PASSPHRASE")
-
-        if not all([key, api_key, api_secret, api_passphrase]):
-            logger.warning("Missing API Creds for CLOB balance fetch.")
-            return None
-
-        try:
-            creds = ApiCreds(api_key=api_key, api_secret=api_secret, api_passphrase=api_passphrase)
-            client = ClobClient("https://clob.polymarket.com", chain_id=137, signature_type=1, key=key, creds=creds)
-
-            balance_info = client.get_balance_allowance(BalanceAllowanceParams(asset_type=AssetType.COLLATERAL))
-            if isinstance(balance_info, dict) and "balance" in balance_info:
-                bal_str = balance_info.get("balance", "0")
-                return float(bal_str) / 1_000_000.0
-            return None
-        except Exception as e:
-            logger.error(f"CLOB Balance Error: {e}")
-            return None
+    addr = _wallet_address()
+    if not addr:
+        return None
 
     try:
-        import asyncio
-        return await asyncio.to_thread(_get_balance_sync)
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"https://gamma-api.polymarket.com/users/{addr}",
+                headers={"User-Agent": USER_AGENT},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status != 200:
+                    logger.warning("Gamma API /users HTTP %d", resp.status)
+                    return None
+                data = await resp.json()
+
+        # The Gamma API schema nests the balance under proxyWallet
+        proxy_wallet = data.get("proxyWallet")
+        if proxy_wallet and "usdBalance" in proxy_wallet:
+            return float(proxy_wallet["usdBalance"])
+            
+        logger.warning("Gamma API response missing proxyWallet.usdBalance")
+        return None
+
     except Exception as e:
-        logger.error("CLOB L2 Cash Balance error: %s", e)
+        logger.error("Gamma API Cash Balance error: %s", e)
         return None
 
 
