@@ -1178,25 +1178,29 @@ async def fetch_ensemble(lat: float, lon: float, unit: str = "F") -> List[float]
 # ---------------------------------------------------------------------------
 # Dewpoint Physical Constraints
 # ---------------------------------------------------------------------------
-def dewpoint_adjustment(current_temp: float, dewpoint: float, predicted_high: float, unit: str = "F"):
+def dewpoint_adjustment(local_hour: int, current_temp: float, dewpoint: float, predicted_high: float, unit: str = "F"):
     """
-    If dewpoint spread is very narrow, cap the predicted high.
+    If dewpoint spread is very narrow during daytime, cap the predicted high.
     High humidity prevents rapid warming.
     """
-    spread = current_temp - dewpoint
+    if local_hour < 10:
+        return predicted_high, None
+        
+    spread = predicted_high - dewpoint
     
     if unit == "C":
-        narrow_threshold = 5.0
-        max_additional_rise = 1.0
+        narrow_threshold = 4.0
+        allowed_gap = 1.0
     else:
-        narrow_threshold = 9.0
-        max_additional_rise = 1.8
+        narrow_threshold = 7.0
+        allowed_gap = 1.8
     
+    # If the mathematical prediction tries to put the high dangerously close to the dewpoint (where air becomes 100% saturated),
+    # physical thermodynamics prevents rapid heating. We cap the prediction to stay slightly above the dewpoint.
     if spread < narrow_threshold:
-        # Very humid — cap warming potential
-        capped = current_temp + max_additional_rise
+        capped = dewpoint + allowed_gap
         if predicted_high > capped:
-            return capped, f"⚠️ High humidity (dewpoint {dewpoint:.1f}°{unit}) caps warming"
+            return capped, f"⚠️ High humidity (dewpoint {dewpoint:.1f}°{unit}) caps theoretical maximum"
     
     return predicted_high, None
 
@@ -1303,6 +1307,6 @@ async def calculate_daily_high(models_data: Dict[str, ModelForecast], metar: Opt
         if dewpoint is not None:
             current_temp = getattr(metar, "temp_f", None) if unit == "F" else getattr(metar, "temp_c", None)
             if current_temp is not None:
-                final, dew_note = dewpoint_adjustment(current_temp, dewpoint, final, unit)
+                final, dew_note = dewpoint_adjustment(local_hour, current_temp, dewpoint, final, unit)
     
     return round(final, 1)
