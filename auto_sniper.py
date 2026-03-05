@@ -132,7 +132,7 @@ async def run_sniper_loop():
                 # Execute LIVE Order on the Polymarket CLOB. 
                 # This breaks the paper-trading barrier and executes real capital.
                 # Crucially, we MUST pass the specific NO token ID, not the broad market condition ID.
-                success = await wallet.place_clob_order(
+                success, detail = await wallet.place_clob_order(
                     token_id=opp["token_id"], 
                     side="NO", 
                     shares=opp["shares"], 

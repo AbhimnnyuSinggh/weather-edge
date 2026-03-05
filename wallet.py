@@ -475,41 +475,55 @@ async def get_capital_summary() -> dict:
 # ---------------------------------------------------------------------------
 # Order Execution (LIVE TRADING: NO PAPER TRADING BEYOND THIS POINT)
 # ---------------------------------------------------------------------------
-async def place_clob_order(token_id: str, side: str, shares: float, limit_price: float) -> bool:
+async def place_clob_order(token_id: str, side: str, shares: float, limit_price: float) -> tuple:
     """
     Submits a LIVE blockchain order to Polymarket's CLOB API.
-    Replaces paper-trading simulations with direct capital execution.
-    Requires py_clob_client to sign the Polygon L2 transaction.
+    Returns (True, response_str) on success, (False, error_str) on failure.
     """
-    def _execute_sync() -> bool:
+    def _execute_sync() -> tuple:
         private_key = os.environ.get("POLY_PRIVATE_KEY")
         if not private_key:
-            logger.error("LIVE EXECUTION ABORTED: POLY_PRIVATE_KEY missing from environment.")
-            return False
+            msg = "POLY_PRIVATE_KEY missing from environment."
+            logger.error(f"LIVE EXECUTION ABORTED: {msg}")
+            return (False, msg)
             
         try:
-            from py_clob_client.client import ClobClient, OrderArgs
+            from py_clob_client.client import ClobClient
+            from py_clob_client.clob_types import OrderArgs
+            
             client = ClobClient("https://clob.polymarket.com", chain_id=137, signature_type=1, key=private_key)
             
             # Dynamically pull Level 2 Credentials from the Polymarket Network to allow placement
             creds = client.create_or_derive_api_creds()
             if not creds:
-                logger.error("LIVE EXECUTION ABORTED: Could not derive Level 2 API Credentials from Private Key.")
-                return False
+                msg = "Could not derive Level 2 API Credentials from Private Key."
+                logger.error(f"LIVE EXECUTION ABORTED: {msg}")
+                return (False, msg)
                 
             client.set_api_creds(creds)
             
-            # PolyMarket requires mapping YES/NO to BUY/SELL states depending on the Token ID parity.
-            # For weather bins, selling NO is technically buying the NO token or shorting the YES token.
-            order_args = OrderArgs(token_id=token_id, price=limit_price, size=shares, side="BUY")
+            order_args = OrderArgs(
+                token_id=token_id,
+                price=limit_price,
+                size=shares,
+                side="BUY"
+            )
             resp = client.create_and_post_order(order_args)
             
-            logger.info(f"LIVE EXECUTION INITIATED: Booking {shares} {side} shares @ {limit_price}¢ on PolyMarket CLOB.")
-            logger.debug(f"CLOB Response: {resp}")
-            return True
+            resp_str = str(resp)
+            logger.info(f"LIVE EXECUTION RESPONSE: {resp_str}")
+            
+            # Check if the response indicates success
+            if isinstance(resp, dict) and resp.get("errorMsg"):
+                msg = resp["errorMsg"]
+                logger.error(f"CLOB ORDER REJECTED: {msg}")
+                return (False, msg)
+            
+            return (True, resp_str)
         except Exception as e:
-            logger.error(f"LIVE EXECUTION ERRORED: {e}")
-            return False
+            msg = f"{type(e).__name__}: {str(e)}"
+            logger.error(f"LIVE EXECUTION ERRORED: {msg}")
+            return (False, msg)
 
     import asyncio
     return await asyncio.to_thread(_execute_sync)

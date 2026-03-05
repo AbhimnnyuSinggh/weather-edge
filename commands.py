@@ -795,12 +795,12 @@ async def cmd_forcesnipe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             
         await update.message.reply_text(f"🎯 **TARGET ACQUIRED**\n`{target_bin.bin.label}`\nPolymarket minimum order is $1.00.\nAttempting to buy **{shares_to_buy}** YES shares @ {target_price*100:.1f}¢ (Total Risk: ${total_risk:.2f})...", parse_mode="Markdown")
         
-        success = await place_clob_order(target_bin.token_id, "YES", shares_to_buy, target_price)
+        success, detail = await place_clob_order(target_bin.token_id, "YES", shares_to_buy, target_price)
         
         if success:
-            await update.message.reply_text(f"✅ **TEST TRADE CONFIRMED**\nThe Level 2 Passwords were successfully synthesized and the Block was minted!\nCapital Deployed: ${total_risk:.2f}\n\nThe Auto-Sniper is unequivocally lethal and armed.", parse_mode="Markdown")
+            await update.message.reply_text(f"✅ **TEST TRADE CONFIRMED**\nThe Level 2 Passwords were successfully synthesized and the Block was minted!\nCapital Deployed: ${total_risk:.2f}\nCLOB Response: `{detail[:200]}`\n\nThe Auto-Sniper is unequivocally lethal and armed.", parse_mode="Markdown")
         else:
-            await update.message.reply_text("❌ **TEST TRADE FAILED**\nExecution engine failed to mint the transaction. Check logs.")
+            await update.message.reply_text(f"❌ **TEST TRADE FAILED**\nExecution engine failed to mint the transaction.\n\n**Reason:** `{detail}`", parse_mode="Markdown")
     except Exception as e:
         await update.message.reply_text(f"❌ **FATAL ERROR**: {str(e)}")
 
