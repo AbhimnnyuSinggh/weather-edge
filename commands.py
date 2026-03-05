@@ -760,17 +760,23 @@ async def cmd_forcesnipe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Hidden override command to execute a minimum $1.00 micro-trade to verify L2 API cryptographic derivation."""
     await update.message.reply_text("🔓 **FORCE SNIPE INITIATED**\nBypassing clocks. Engaging Polygon L2 Crypto-Derivation Engine to find a dead test bin...", parse_mode="Markdown")
     try:
-        from markets import fetch_all_markets
+        from markets import fetch_city_market, CITIES
         from wallet import place_clob_order
+        from datetime import datetime, date
+        import pytz
         
-        all_markets = await fetch_all_markets()
+        # Test purely on Chicago today
+        tz = pytz.timezone(CITIES["/chi"]["tz"])
+        today = datetime.now(tz).date()
+        Group = await fetch_city_market("/chi", today)
         
         # Seek the cheapest possible NO share to absolutely minimize risk
         target_bin = None
-        for m in all_markets.values():
-            if m.no_best_ask > 0 and m.no_best_ask <= 0.05 and m.no_token_id:
-                target_bin = m
-                break
+        if Group:
+            for m in Group.bins:
+                if m.no_best_ask > 0 and m.no_best_ask <= 0.05 and m.no_token_id:
+                    target_bin = m
+                    break
                 
         if not target_bin:
             await update.message.reply_text("❌ Could not find a test bin cheaper than 5 cents. Aborting to protect capital.")
