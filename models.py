@@ -1307,6 +1307,9 @@ async def calculate_daily_high(models_data: Dict[str, ModelForecast], metar: Opt
         model_pred = ((model_pred * total_w) + (trend_pred * metar_trend_weight)) / total_w_with_trend
     
     # Step 4: Time-of-day blend with METAR
+    # Before noon: METAR can only RAISE the prediction (morning METAR is always lower
+    # than the eventual daily high — blending toward it would drag predictions DOWN).
+    # After noon: Full bidirectional blend (METAR becomes increasingly definitive).
     if local_hour < 8:
         blend = 0.0
     elif local_hour < 14:
@@ -1316,7 +1319,16 @@ async def calculate_daily_high(models_data: Dict[str, ModelForecast], metar: Opt
     blend = max(0.0, min(1.0, blend))
     
     if current_high is not None:
-        final = (1 - blend) * model_pred + blend * current_high
+        if local_hour < 12:
+            # MORNING: Only blend upward — METAR floor already prevents going below,
+            # but don't average DOWN toward a low morning METAR reading.
+            if current_high > model_pred:
+                final = (1 - blend) * model_pred + blend * current_high
+            else:
+                final = model_pred  # Trust models in the morning
+        else:
+            # AFTERNOON: Full blend — METAR high is increasingly the real answer
+            final = (1 - blend) * model_pred + blend * current_high
     else:
         final = model_pred
     
