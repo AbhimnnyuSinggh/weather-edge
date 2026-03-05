@@ -491,6 +491,14 @@ async def place_clob_order(token_id: str, side: str, shares: float, limit_price:
             from py_clob_client.client import ClobClient
             from py_clob_client.clob_types import OrderArgs
             
+            # Inject proxy to bypass Polymarket geo-restriction on datacenter IPs
+            proxy_url = os.environ.get("CLOB_PROXY_URL")
+            if proxy_url:
+                import httpx
+                import py_clob_client.http_helpers.helpers as clob_helpers
+                clob_helpers._http_client = httpx.Client(http2=True, proxy=proxy_url, timeout=30.0)
+                logger.info(f"CLOB Proxy injected: routing through proxy")
+            
             client = ClobClient("https://clob.polymarket.com", chain_id=137, signature_type=1, key=private_key)
             
             # Dynamically pull Level 2 Credentials from the Polymarket Network to allow placement
