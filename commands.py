@@ -765,21 +765,25 @@ async def cmd_forcesnipe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         from datetime import datetime, date
         import pytz
         
-        # Test purely on Chicago today
-        tz = pytz.timezone(CITIES["chi"]["tz"])
-        today = datetime.now(tz).date()
-        Group = await fetch_city_market("chi", today)
-        
-        # Seek the cheapest possible NO share to absolutely minimize risk
+        # Scan all cities to find any mathematically dead NO share
         target_bin = None
         no_price = 0.0
-        if Group:
-            for m in Group.bins:
-                calculated_no = round(1.0 - m.yes_price, 3)
-                if calculated_no > 0 and calculated_no <= 0.05 and m.no_token_id:
-                    target_bin = m
-                    no_price = calculated_no
-                    break
+        
+        for city_key, city_data in CITIES.items():
+            tz = pytz.timezone(city_data["tz"])
+            today = datetime.now(tz).date()
+            Group = await fetch_city_market(city_key, today)
+            
+            if Group:
+                for m in Group.bins:
+                    calculated_no = round(1.0 - m.yes_price, 3)
+                    if calculated_no > 0 and calculated_no <= 0.05 and m.no_token_id:
+                        target_bin = m
+                        no_price = calculated_no
+                        break
+            
+            if target_bin:
+                break
                 
         if not target_bin:
             await update.message.reply_text("❌ Could not find a test bin cheaper than 5 cents. Aborting to protect capital.")
