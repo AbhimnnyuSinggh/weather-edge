@@ -638,6 +638,8 @@ async def cmd_city_analysis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             
             range_low = max(current_high, predicted_high - uncertainty)
             range_high = min(ceiling, predicted_high + uncertainty)
+            # Sanity: prevent inverted range when predicted_high < METAR floor
+            range_high = max(range_high, range_low)
             final_range = f"{range_low:.1f}–{range_high:.1f}°{unit} (±{uncertainty:.1f}°)"
         else:
             final_range = f"{(predicted_high - uncertainty):.1f}–{(predicted_high + uncertainty):.1f}°{unit} (±{uncertainty:.1f}°)"

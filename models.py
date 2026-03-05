@@ -1183,7 +1183,10 @@ def dewpoint_adjustment(local_hour: int, current_temp: float, dewpoint: float, p
     If dewpoint spread is very narrow during daytime, cap the predicted high.
     High humidity prevents rapid warming.
     """
-    if local_hour < 10:
+    # Guard: Only apply dewpoint cap in the afternoon (>= 2 PM).
+    # Morning dewpoint spread is naturally tight (temp hasn't risen yet)
+    # and does NOT indicate the afternoon spread will suppress heating.
+    if local_hour < 14:
         return predicted_high, None
         
     spread = predicted_high - dewpoint
