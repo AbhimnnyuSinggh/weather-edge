@@ -1232,7 +1232,7 @@ async def calculate_daily_high(models_data: Dict[str, ModelForecast], metar: Opt
         "bom": 2.2,
     }
     
-    # Step 1: Inverse-MAE weighted average with bias correction
+    # Step 1: Inverse-MAE weighted average (bias already applied during model extraction)
     weights = {}
     temps = {}
     for name, forecast in models_data.items():
@@ -1241,15 +1241,30 @@ async def calculate_daily_high(models_data: Dict[str, ModelForecast], metar: Opt
             if temp is None:
                 continue
             
-            # Apply yesterday's bias explicitly
-            recent_bias = await tracker.get_recent_bias(station, name, days=7)
-            temp = temp - recent_bias  # Correct for known model bias
+            # NOTE: bias_corrected already has _get_bias applied during extraction.
+            # Do NOT apply get_recent_bias here again — that would be double-correction.
             
             mae = DEFAULT_MAE.get(name, 2.0)
             weights[name] = 1.0 / max(0.5, mae)
             temps[name] = temp
         except AttributeError:
             continue
+    
+    if not temps:
+        return 0.0
+    
+    # OUTLIER DETECTION: Discard any model that is >10°F (or >5.5°C) from the median.
+    # This prevents a single broken model (e.g. stale MOS) from corrupting the entire prediction.
+    threshold = 10.0 if unit == "F" else 5.5
+    all_temps = sorted(temps.values())
+    median_temp = all_temps[len(all_temps) // 2]
+    
+    outlier_names = [n for n in temps if abs(temps[n] - median_temp) > threshold]
+    for outlier in outlier_names:
+        logger.warning("OUTLIER DISCARDED: %s = %.1f (median = %.1f, threshold = %.1f)",
+                       outlier, temps[outlier], median_temp, threshold)
+        del temps[outlier]
+        del weights[outlier]
     
     if not temps:
         return 0.0
@@ -1272,17 +1287,21 @@ async def calculate_daily_high(models_data: Dict[str, ModelForecast], metar: Opt
             model_pred = max(model_pred, current_high)
     
     # Step 3: METAR trend projection
-    if metar_trend and metar_trend.get("projected_high"):
+    # IMPORTANT: Only apply trend projection after noon. Before noon, morning
+    # temperature dips from overnight fronts create false "falling" signals that
+    # incorrectly drag the prediction down. The real daily peak hasn't happened yet.
+    if local_hour >= 12 and metar_trend and metar_trend.get("projected_high"):
         trend_pred = metar_trend["projected_high"]
         
         # Blend based on time of day and whether temp is rising
         if local_hour >= 12 and metar_trend.get("is_rising"):
             # Afternoon and rising → trend is very reliable
             metar_trend_weight = 3.0
-        elif local_hour >= 10:
-            metar_trend_weight = 1.5
+        elif local_hour >= 14:
+            # Afternoon and falling → high is likely set, very reliable
+            metar_trend_weight = 2.5
         else:
-            metar_trend_weight = 0.5
+            metar_trend_weight = 1.5
         
         total_w_with_trend = total_w + metar_trend_weight
         model_pred = ((model_pred * total_w) + (trend_pred * metar_trend_weight)) / total_w_with_trend
