@@ -488,20 +488,32 @@ async def place_clob_order(token_id: str, side: str, shares: float, limit_price:
             return (False, msg)
             
         try:
+            # Step 1: Inject proxy BEFORE importing py_clob_client modules
+            # so that credential derivation also routes through the proxy.
+            proxy_url = os.environ.get("CLOB_PROXY_URL")
+            if proxy_url:
+                # Set environment variables that httpx respects automatically
+                os.environ["HTTPS_PROXY"] = proxy_url
+                os.environ["HTTP_PROXY"] = proxy_url
+                
+                # Also monkey-patch the global httpx client inside py_clob_client.
+                # CRITICAL: http2=False because HTTP/2 does NOT work through HTTP CONNECT proxies.
+                import httpx
+                import py_clob_client.http_helpers.helpers as clob_helpers
+                clob_helpers._http_client = httpx.Client(
+                    http2=False,
+                    proxy=proxy_url,
+                    timeout=30.0,
+                    verify=True
+                )
+                logger.info(f"CLOB Proxy injected (http2 disabled): routing through proxy")
+            
             from py_clob_client.client import ClobClient
             from py_clob_client.clob_types import OrderArgs
             
-            # Inject proxy to bypass Polymarket geo-restriction on datacenter IPs
-            proxy_url = os.environ.get("CLOB_PROXY_URL")
-            if proxy_url:
-                import httpx
-                import py_clob_client.http_helpers.helpers as clob_helpers
-                clob_helpers._http_client = httpx.Client(http2=True, proxy=proxy_url, timeout=30.0)
-                logger.info(f"CLOB Proxy injected: routing through proxy")
-            
             client = ClobClient("https://clob.polymarket.com", chain_id=137, signature_type=1, key=private_key)
             
-            # Dynamically pull Level 2 Credentials from the Polymarket Network to allow placement
+            # Dynamically pull Level 2 Credentials from the Polymarket Network
             creds = client.create_or_derive_api_creds()
             if not creds:
                 msg = "Could not derive Level 2 API Credentials from Private Key."
@@ -532,6 +544,10 @@ async def place_clob_order(token_id: str, side: str, shares: float, limit_price:
             msg = f"{type(e).__name__}: {str(e)}"
             logger.error(f"LIVE EXECUTION ERRORED: {msg}")
             return (False, msg)
+        finally:
+            # Clean up proxy env vars so they don't leak to other requests
+            os.environ.pop("HTTPS_PROXY", None)
+            os.environ.pop("HTTP_PROXY", None)
 
     import asyncio
     return await asyncio.to_thread(_execute_sync)
