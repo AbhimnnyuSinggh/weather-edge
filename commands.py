@@ -757,8 +757,8 @@ async def cmd_city_analysis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # Register handlers
 # ---------------------------------------------------------------------------
 async def cmd_forcesnipe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Hidden override command to execute exactly 1 micro-trade to verify L2 API cryptographic derivation."""
-    await update.message.reply_text("🔓 **FORCE SNIPE INITIATED**\nBypassing clocks. Engaging Polygon L2 Crypto-Derivation Engine to find 1 test share...", parse_mode="Markdown")
+    """Hidden override command to execute a minimum $1.00 micro-trade to verify L2 API cryptographic derivation."""
+    await update.message.reply_text("🔓 **FORCE SNIPE INITIATED**\nBypassing clocks. Engaging Polygon L2 Crypto-Derivation Engine to find a dead test bin...", parse_mode="Markdown")
     try:
         from markets import fetch_all_markets
         from wallet import place_clob_order
@@ -768,20 +768,25 @@ async def cmd_forcesnipe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         # Seek the cheapest possible NO share to absolutely minimize risk
         target_bin = None
         for m in all_markets.values():
-            if m.no_best_ask > 0 and m.no_best_ask <= 0.02 and m.no_token_id:
+            if m.no_best_ask > 0 and m.no_best_ask <= 0.05 and m.no_token_id:
                 target_bin = m
                 break
                 
         if not target_bin:
-            await update.message.reply_text("❌ Could not find a test bin cheaper than 2 cents. Aborting to protect capital.")
+            await update.message.reply_text("❌ Could not find a test bin cheaper than 5 cents. Aborting to protect capital.")
             return
             
-        await update.message.reply_text(f"🎯 **TARGET ACQUIRED**\n`{target_bin.slug}`\nAttempting to buy 1 NO share @ {target_bin.no_best_ask*100:.1f}¢...", parse_mode="Markdown")
+        # Polymarket strictly requires a minimum order size of $1.00. 
+        # We calculate the exact number of shares needed to barely clear the $1.00 hurdle.
+        shares_to_buy = max(1, int(1.05 / target_bin.no_best_ask))
+        total_risk = shares_to_buy * target_bin.no_best_ask
+            
+        await update.message.reply_text(f"🎯 **TARGET ACQUIRED**\n`{target_bin.slug}`\nPolymarket minimum order is $1.00.\nAttempting to buy **{shares_to_buy}** NO shares @ {target_bin.no_best_ask*100:.1f}¢ (Total Risk: ${total_risk:.2f})...", parse_mode="Markdown")
         
-        success = await place_clob_order(target_bin.no_token_id, "NO", 1, target_bin.no_best_ask)
+        success = await place_clob_order(target_bin.no_token_id, "NO", shares_to_buy, target_bin.no_best_ask)
         
         if success:
-            await update.message.reply_text(f"✅ **TEST TRADE CONFIRMED**\nThe Level 2 Passwords were successfully synthesized and the Block was minted!\nCost: ${target_bin.no_best_ask:.2f}\n\nThe Auto-Sniper is unequivocally lethal and armed.", parse_mode="Markdown")
+            await update.message.reply_text(f"✅ **TEST TRADE CONFIRMED**\nThe Level 2 Passwords were successfully synthesized and the Block was minted!\nCapital Deployed: ${total_risk:.2f}\n\nThe Auto-Sniper is unequivocally lethal and armed.", parse_mode="Markdown")
         else:
             await update.message.reply_text("❌ **TEST TRADE FAILED**\nExecution engine failed to mint the transaction. Check logs.")
     except Exception as e:
