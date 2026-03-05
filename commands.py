@@ -790,7 +790,7 @@ async def cmd_forcesnipe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         shares_to_buy = max(1, int(1.05 / no_price))
         total_risk = shares_to_buy * no_price
             
-        await update.message.reply_text(f"🎯 **TARGET ACQUIRED**\n`{target_bin.slug}`\nPolymarket minimum order is $1.00.\nAttempting to buy **{shares_to_buy}** NO shares @ {no_price*100:.1f}¢ (Total Risk: ${total_risk:.2f})...", parse_mode="Markdown")
+        await update.message.reply_text(f"🎯 **TARGET ACQUIRED**\n`{target_bin.bin.label}`\nPolymarket minimum order is $1.00.\nAttempting to buy **{shares_to_buy}** NO shares @ {no_price*100:.1f}¢ (Total Risk: ${total_risk:.2f})...", parse_mode="Markdown")
         
         success = await place_clob_order(target_bin.no_token_id, "NO", shares_to_buy, no_price)
         
