@@ -765,9 +765,9 @@ async def cmd_forcesnipe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         from datetime import datetime, date
         import pytz
         
-        # Scan all cities to find any mathematically dead NO share
+        # Scan all cities to find any mathematically dead YES share
         target_bin = None
-        no_price = 0.0
+        target_price = 0.0
         
         for city_key, city_data in CITIES.items():
             tz = pytz.timezone(city_data["tz"])
@@ -776,10 +776,9 @@ async def cmd_forcesnipe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             
             if Group:
                 for m in Group.bins:
-                    calculated_no = round(1.0 - m.yes_price, 3)
-                    if calculated_no > 0 and calculated_no <= 0.05 and m.no_token_id:
+                    if m.yes_price > 0 and m.yes_price <= 0.05 and m.token_id:
                         target_bin = m
-                        no_price = calculated_no
+                        target_price = m.yes_price
                         break
             
             if target_bin:
@@ -791,12 +790,12 @@ async def cmd_forcesnipe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             
         # Polymarket strictly requires a minimum order size of $1.00. 
         # We calculate the exact number of shares needed to barely clear the $1.00 hurdle.
-        shares_to_buy = max(1, int(1.05 / no_price))
-        total_risk = shares_to_buy * no_price
+        shares_to_buy = max(1, int(1.05 / target_price))
+        total_risk = shares_to_buy * target_price
             
-        await update.message.reply_text(f"🎯 **TARGET ACQUIRED**\n`{target_bin.bin.label}`\nPolymarket minimum order is $1.00.\nAttempting to buy **{shares_to_buy}** NO shares @ {no_price*100:.1f}¢ (Total Risk: ${total_risk:.2f})...", parse_mode="Markdown")
+        await update.message.reply_text(f"🎯 **TARGET ACQUIRED**\n`{target_bin.bin.label}`\nPolymarket minimum order is $1.00.\nAttempting to buy **{shares_to_buy}** YES shares @ {target_price*100:.1f}¢ (Total Risk: ${total_risk:.2f})...", parse_mode="Markdown")
         
-        success = await place_clob_order(target_bin.no_token_id, "NO", shares_to_buy, no_price)
+        success = await place_clob_order(target_bin.token_id, "YES", shares_to_buy, target_price)
         
         if success:
             await update.message.reply_text(f"✅ **TEST TRADE CONFIRMED**\nThe Level 2 Passwords were successfully synthesized and the Block was minted!\nCapital Deployed: ${total_risk:.2f}\n\nThe Auto-Sniper is unequivocally lethal and armed.", parse_mode="Markdown")
