@@ -766,9 +766,9 @@ async def cmd_forcesnipe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         import pytz
         
         # Test purely on Chicago today
-        tz = pytz.timezone(CITIES["/chi"]["tz"])
+        tz = pytz.timezone(CITIES["chi"]["tz"])
         today = datetime.now(tz).date()
-        Group = await fetch_city_market("/chi", today)
+        Group = await fetch_city_market("chi", today)
         
         # Seek the cheapest possible NO share to absolutely minimize risk
         target_bin = None
