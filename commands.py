@@ -774,7 +774,7 @@ async def cmd_forcesnipe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         target_bin = None
         if Group:
             for m in Group.bins:
-                if m.no_best_ask > 0 and m.no_best_ask <= 0.05 and m.no_token_id:
+                if m.no_price > 0 and m.no_price <= 0.05 and m.no_token_id:
                     target_bin = m
                     break
                 
@@ -784,12 +784,12 @@ async def cmd_forcesnipe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             
         # Polymarket strictly requires a minimum order size of $1.00. 
         # We calculate the exact number of shares needed to barely clear the $1.00 hurdle.
-        shares_to_buy = max(1, int(1.05 / target_bin.no_best_ask))
-        total_risk = shares_to_buy * target_bin.no_best_ask
+        shares_to_buy = max(1, int(1.05 / target_bin.no_price))
+        total_risk = shares_to_buy * target_bin.no_price
             
-        await update.message.reply_text(f"🎯 **TARGET ACQUIRED**\n`{target_bin.slug}`\nPolymarket minimum order is $1.00.\nAttempting to buy **{shares_to_buy}** NO shares @ {target_bin.no_best_ask*100:.1f}¢ (Total Risk: ${total_risk:.2f})...", parse_mode="Markdown")
+        await update.message.reply_text(f"🎯 **TARGET ACQUIRED**\n`{target_bin.slug}`\nPolymarket minimum order is $1.00.\nAttempting to buy **{shares_to_buy}** NO shares @ {target_bin.no_price*100:.1f}¢ (Total Risk: ${total_risk:.2f})...", parse_mode="Markdown")
         
-        success = await place_clob_order(target_bin.no_token_id, "NO", shares_to_buy, target_bin.no_best_ask)
+        success = await place_clob_order(target_bin.no_token_id, "NO", shares_to_buy, target_bin.no_price)
         
         if success:
             await update.message.reply_text(f"✅ **TEST TRADE CONFIRMED**\nThe Level 2 Passwords were successfully synthesized and the Block was minted!\nCapital Deployed: ${total_risk:.2f}\n\nThe Auto-Sniper is unequivocally lethal and armed.", parse_mode="Markdown")
