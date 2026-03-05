@@ -495,7 +495,7 @@ async def place_clob_order(token_id: str, side: str, shares: float, limit_price:
             from py_clob_client.clob_types import OrderArgs
             
             # Use Cloudflare Worker host if configured, otherwise direct
-            clob_host = os.environ.get("CLOB_HOST", "https://clob.polymarket.com")
+            clob_host = os.environ.get("CLOB_HOST", "https://clob.polymarket.com").strip()
             logger.info(f"CLOB Host: {clob_host}")
             
             client = ClobClient(clob_host, chain_id=137, signature_type=1, key=private_key)
