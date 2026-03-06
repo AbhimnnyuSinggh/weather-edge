@@ -641,22 +641,32 @@ async def cmd_city_analysis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if current_high:
             local_hour = now_local.hour
             hours_left = max(0, 24 - local_hour)
-            max_warming = 0.5 if unit == "F" else 0.3
-            ceiling = current_high + (max_warming * hours_left)
             
-            # --- FIX #1: METAR Velocity Boost (Aggressive Afternoon Tightening) ---
-            if local_hour >= 14 and station_metar and hasattr(station_metar, 'velocity') and station_metar.velocity:
-                vel = station_metar.velocity.velocity_1h_f if unit == "F" else station_metar.velocity.velocity_1h
-                trend_hours = station_metar.velocity.trend_hours
-                if vel is not None and vel < -0.6 and trend_hours >= 3.0:
-                    ceiling_reduction = abs(vel) * (hours_left * 0.65)
-                    ceiling -= ceiling_reduction
-                    ceiling = max(ceiling, current_high) # Never drop below known reality
+            # Only apply ceiling-based clamping AFTER peak hour.
+            # Before peak, morning warming can be 3-5°F/hr — a 0.5°F/hr
+            # ceiling collapses the range to a single point (the bug).
+            if local_hour >= 14:
+                max_warming = 0.5 if unit == "F" else 0.3
+                ceiling = current_high + (max_warming * hours_left)
+                
+                # --- METAR Velocity Boost (Aggressive Afternoon Tightening) ---
+                if station_metar and hasattr(station_metar, 'velocity') and station_metar.velocity:
+                    vel = station_metar.velocity.velocity_1h_f if unit == "F" else station_metar.velocity.velocity_1h
+                    trend_hours = station_metar.velocity.trend_hours
+                    if vel is not None and vel < -0.6 and trend_hours >= 3.0:
+                        ceiling_reduction = abs(vel) * (hours_left * 0.65)
+                        ceiling -= ceiling_reduction
+                        ceiling = max(ceiling, current_high)
+                
+                range_low = max(current_high, predicted_high - uncertainty)
+                range_high = min(ceiling, predicted_high + uncertainty)
+                range_high = max(range_high, range_low)
+            else:
+                # Before peak: use METAR floor but don't cap the ceiling
+                range_low = max(current_high, predicted_high - uncertainty)
+                range_high = predicted_high + uncertainty
+                range_high = max(range_high, range_low)
             
-            range_low = max(current_high, predicted_high - uncertainty)
-            range_high = min(ceiling, predicted_high + uncertainty)
-            # Sanity: prevent inverted range when predicted_high < METAR floor
-            range_high = max(range_high, range_low)
             final_range = f"{range_low:.1f}–{range_high:.1f}°{unit} (±{uncertainty:.1f}°)"
         else:
             final_range = f"{(predicted_high - uncertainty):.1f}–{(predicted_high + uncertainty):.1f}°{unit} (±{uncertainty:.1f}°)"
