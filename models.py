@@ -178,7 +178,7 @@ async def _fetch_open_meteo(station: str, lat: float, lon: float,
     """Fetch forecasts from Open-Meteo for multiple models in one call."""
     model_map = {
         "gfs": "gfs_seamless",
-        "ecmwf": "ecmwf_ifs025",
+        "ecmwf": "ecmwf_ifs",
         "icon": "icon_seamless",
         "gem": "gem_seamless",
         "jma": "jma_seamless",

@@ -485,12 +485,10 @@ async def cmd_city_analysis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 min_sigma = 1.5 if unit == "F" else 0.8
                 uncertainty = max(min_sigma, full_range / 2.0, uncertainty)
                 
-            if "ensemble" in models_data and models_data["ensemble"]:
-                ensemble_temps = getattr(models_data["ensemble"], "raw_ensemble_f", []) if unit == "F" else getattr(models_data["ensemble"], "raw_ensemble_c", [])
-                if len(ensemble_temps) > 10:
-                    p10, p90 = np.percentile(ensemble_temps, [10, 90])
-                    ensemble_spread = (p90 - p10) / 2.0
-                    uncertainty = max(uncertainty, ensemble_spread * 1.15)
+            # NOTE: Ensemble spread override REMOVED — model-spread sigma from
+            # 11 independent models already captures real uncertainty. GFS ensemble
+            # (31 members of one model) creates enormous p10-p90 spreads on transition
+            # days that blow up sigma to 10+°F, making bin probabilities useless.
         else:
             uncertainty = 3.0 if unit == "F" else 1.5
 
