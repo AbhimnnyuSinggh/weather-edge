@@ -457,9 +457,16 @@ async def cmd_city_analysis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         all_act = [k for k, v in models_data.items() if v]
         val_mods = [models_data[k] for k in all_act if models_data.get(k)]
         
-        # FIX 5: Use FULL model spread to prevent overconfident narrow distributions
-        all_temps_list = [(f.bias_corrected_f if unit == "F" else f.bias_corrected_c) 
-                          for f in val_mods if f and getattr(f, 'bias_corrected_f', None)]
+        # FIX 5 (Updated): Use FULL model spread but EXCLUDE extreme outliers
+        all_temps_raw = [(f.bias_corrected_f if unit == "F" else f.bias_corrected_c) 
+                         for f in val_mods if f and getattr(f, 'bias_corrected_f' if unit == 'F' else 'bias_corrected_c', None)]
+        
+        if all_temps_raw:
+            median_t = sorted(all_temps_raw)[len(all_temps_raw) // 2]
+            outlier_threshold = 10.0 if unit == "F" else 5.5
+            all_temps_list = [t for t in all_temps_raw if abs(t - median_t) <= outlier_threshold]
+        else:
+            all_temps_list = []
         
         trusted_t = []
         for f in val_mods:
