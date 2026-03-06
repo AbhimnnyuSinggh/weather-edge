@@ -456,6 +456,11 @@ async def cmd_city_analysis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         import numpy as np
         all_act = [k for k, v in models_data.items() if v]
         val_mods = [models_data[k] for k in all_act if models_data.get(k)]
+        
+        # FIX 5: Use FULL model spread to prevent overconfident narrow distributions
+        all_temps_list = [(f.bias_corrected_f if unit == "F" else f.bias_corrected_c) 
+                          for f in val_mods if f and getattr(f, 'bias_corrected_f', None)]
+        
         trusted_t = []
         for f in val_mods:
             temp = f.bias_corrected_f if unit == "F" else f.bias_corrected_c
@@ -466,6 +471,13 @@ async def cmd_city_analysis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if trusted_t and len(trusted_t) >= 3:
             std_dev = np.std(trusted_t)
             uncertainty = std_dev * 1.5
+            
+            # FIX 5: Wider Sigma (Sigma should be at least half the model spread, min 1.5°F)
+            if all_temps_list:
+                full_range = max(all_temps_list) - min(all_temps_list)
+                min_sigma = 1.5 if unit == "F" else 0.8
+                uncertainty = max(min_sigma, full_range / 2.0, uncertainty)
+                
             if "ensemble" in models_data and models_data["ensemble"]:
                 ensemble_temps = getattr(models_data["ensemble"], "raw_ensemble_f", []) if unit == "F" else getattr(models_data["ensemble"], "raw_ensemble_c", [])
                 if len(ensemble_temps) > 10:
@@ -473,7 +485,7 @@ async def cmd_city_analysis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     ensemble_spread = (p90 - p10) / 2.0
                     uncertainty = min(uncertainty, ensemble_spread * 1.15)
         else:
-            uncertainty = 3.0
+            uncertainty = 3.0 if unit == "F" else 1.5
 
         m_high_floor = "No"
         if high_so_far_val and predicted_high == high_so_far_val:

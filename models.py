@@ -1214,13 +1214,15 @@ async def calculate_daily_high(models_data: Dict[str, ModelForecast], metar: Opt
                                metar_trend: Optional[Dict], ensemble_members: List[float],
                                local_hour: int, station: str, unit: str = "F") -> float:
     """
-    5-step prediction combining all data sources:
+    7-step prediction combining all data sources:
     
-    Step 1: Inverse-MAE weighted model average (with bias correction)
-    Step 2: METAR floor (can't be lower than observed high)
-    Step 3: METAR trend projection (if rising, where does it end up?)
-    Step 4: Time-of-day blend
-    Step 5: Dewpoint constraint
+    Step 1: Inverse-MAE weighted model average (NBM gets 2x priority)
+    Step 2: Positive bias correction (models systematically underpredict highs)
+    Step 3: P75 blend (highs are maxima, not means)
+    Step 4: METAR floor (can't be lower than observed high)
+    Step 5: METAR trend projection (if rising, where does it end up?)
+    Step 6: Peak-hour-aware METAR blend (with fog detection)
+    Step 7: Dewpoint constraint
     """
     
     DEFAULT_MAE = {
@@ -1248,7 +1250,13 @@ async def calculate_daily_high(models_data: Dict[str, ModelForecast], metar: Opt
             # Do NOT apply get_recent_bias here again — that would be double-correction.
             
             mae = DEFAULT_MAE.get(name, 2.0)
-            weights[name] = 1.0 / max(0.5, mae)
+            base_weight = 1.0 / max(0.5, mae)
+            # FIX 2: NBM is NOAA's statistically optimized blend — when it
+            # disagrees with raw models, it's usually right. Give it 2x weight.
+            if name == "nbm":
+                weights[name] = base_weight * 2.0
+            else:
+                weights[name] = base_weight
             temps[name] = temp
         except AttributeError:
             continue
@@ -1282,14 +1290,39 @@ async def calculate_daily_high(models_data: Dict[str, ModelForecast], metar: Opt
         ensemble_weight = 1.0 / 1.3
         model_pred = (model_pred * total_w + ensemble_median * ensemble_weight) / (total_w + ensemble_weight)
     
-    # Step 2: METAR floor
+    # FIX 1: POSITIVE BIAS CORRECTION
+    # NWP models systematically underpredict daily highs by ~0.5-1.5°F due to
+    # grid-cell averaging, conservative physics, and inability to capture
+    # brief warm-air advection spikes. Apply empirically calibrated offset.
+    HIGH_BIAS_CORRECTION_F = 0.8
+    HIGH_BIAS_CORRECTION_C = 0.45
+    model_pred += HIGH_BIAS_CORRECTION_F if unit == "F" else HIGH_BIAS_CORRECTION_C
+    
+    # FIX 3: P75 BLEND
+    # Daily highs are MAXIMA, not means. A weighted average is biased toward
+    # the center of the distribution. Blend toward P75 to correct for this.
+    sorted_vals = sorted(temps.values())
+    p75_idx = int(len(sorted_vals) * 0.75)
+    p75 = sorted_vals[min(p75_idx, len(sorted_vals) - 1)]
+    model_pred = 0.65 * model_pred + 0.35 * p75
+    
+    # Step 4: METAR floor
     current_high = None
+    fog_detected = False
     if metar and hasattr(metar, 'velocity') and metar.velocity:
         current_high = metar.velocity.day_high if unit == "C" else metar.velocity.day_high_f
         if current_high:
             model_pred = max(model_pred, current_high)
     
-    # Step 3: METAR trend projection
+    # FIX 6: FOG DETECTION
+    # Dense fog suppresses morning temps but when it clears, rapid warming
+    # occurs. Reduce METAR blend influence during fog.
+    if metar and hasattr(metar, 'visibility_m') and metar.visibility_m is not None:
+        if metar.visibility_m < 1609.34:  # less than 1 statute mile
+            fog_detected = True
+            logger.info("FOG detected at %s (vis=%.0fm) — reducing METAR blend", station, metar.visibility_m)
+    
+    # Step 5: METAR trend projection
     # IMPORTANT: Only apply trend projection after noon. Before noon, morning
     # temperature dips from overnight fronts create false "falling" signals that
     # incorrectly drag the prediction down. The real daily peak hasn't happened yet.
@@ -1298,10 +1331,8 @@ async def calculate_daily_high(models_data: Dict[str, ModelForecast], metar: Opt
         
         # Blend based on time of day and whether temp is rising
         if local_hour >= 12 and metar_trend.get("is_rising"):
-            # Afternoon and rising → trend is very reliable
             metar_trend_weight = 3.0
         elif local_hour >= 14:
-            # Afternoon and falling → high is likely set, very reliable
             metar_trend_weight = 2.5
         else:
             metar_trend_weight = 1.5
@@ -1309,33 +1340,54 @@ async def calculate_daily_high(models_data: Dict[str, ModelForecast], metar: Opt
         total_w_with_trend = total_w + metar_trend_weight
         model_pred = ((model_pred * total_w) + (trend_pred * metar_trend_weight)) / total_w_with_trend
     
-    # Step 4: Time-of-day blend with METAR
-    # Before noon: METAR can only RAISE the prediction (morning METAR is always lower
-    # than the eventual daily high — blending toward it would drag predictions DOWN).
-    # After noon: Full bidirectional blend (METAR becomes increasingly definitive).
-    if local_hour < 8:
-        blend = 0.0
-    elif local_hour < 14:
-        blend = (local_hour - 8) / 12.0
-    else:
-        blend = 0.5 + (local_hour - 14) / 12.0
-    blend = max(0.0, min(1.0, blend))
+    # Step 6: PEAK-HOUR-AWARE METAR BLEND (FIX 4)
+    # CRITICAL: Before the expected peak heating hour, METAR can only RAISE
+    # the prediction. The old code started blending toward METAR at hour 8
+    # and gave it 42% weight by 1 PM — but at 1 PM the daily high often
+    # hasn't occurred (fog clearing, warm front passage, etc.).
+    # After peak hour, METAR high is increasingly definitive.
+    current_month = date.today().month
+    PEAK_HOURS = {
+        "KMIA": {1:15, 2:15, 3:15, 4:15, 5:14, 6:14, 7:14, 8:14, 9:15, 10:15, 11:15, 12:15},
+        "KLGA": {1:14, 2:14, 3:15, 4:15, 5:15, 6:16, 7:16, 8:16, 9:15, 10:15, 11:14, 12:14},
+        "KORD": {1:14, 2:14, 3:15, 4:15, 5:15, 6:16, 7:16, 8:15, 9:15, 10:15, 11:14, 12:14},
+        "RKSI": {1:14, 2:14, 3:15, 4:15, 5:15, 6:15, 7:15, 8:15, 9:15, 10:14, 11:14, 12:14},
+        "EGLC": {1:14, 2:14, 3:15, 4:15, 5:16, 6:16, 7:16, 8:16, 9:15, 10:14, 11:14, 12:14},
+        "KATL": {1:15, 2:15, 3:15, 4:15, 5:15, 6:15, 7:15, 8:15, 9:15, 10:15, 11:15, 12:15},
+        "KDEN": {1:14, 2:14, 3:15, 4:15, 5:15, 6:15, 7:15, 8:15, 9:15, 10:15, 11:14, 12:14},
+        "KIAH": {1:15, 2:15, 3:15, 4:15, 5:15, 6:15, 7:15, 8:15, 9:15, 10:15, 11:15, 12:15},
+        "KPHX": {1:15, 2:15, 3:15, 4:15, 5:15, 6:15, 7:15, 8:15, 9:15, 10:15, 11:15, 12:15},
+        "KDFW": {1:15, 2:15, 3:15, 4:15, 5:15, 6:15, 7:15, 8:15, 9:15, 10:15, 11:15, 12:15},
+        "KSEA": {1:14, 2:14, 3:15, 4:15, 5:16, 6:16, 7:16, 8:16, 9:15, 10:14, 11:14, 12:14},
+        "KBOS": {1:14, 2:14, 3:15, 4:15, 5:15, 6:16, 7:16, 8:16, 9:15, 10:15, 11:14, 12:14},
+        "RJTT": {1:14, 2:14, 3:15, 4:15, 5:15, 6:15, 7:15, 8:15, 9:15, 10:14, 11:14, 12:14},
+        "LFPG": {1:14, 2:14, 3:15, 4:15, 5:16, 6:16, 7:16, 8:16, 9:15, 10:14, 11:14, 12:14},
+        "YSSY": {1:15, 2:15, 3:15, 4:14, 5:14, 6:13, 7:13, 8:14, 9:14, 10:15, 11:15, 12:15},
+    }
+    peak_hour = PEAK_HOURS.get(station, {}).get(current_month, 15)
     
     if current_high is not None:
-        if local_hour < 12:
-            # MORNING: Only blend upward — METAR floor already prevents going below,
-            # but don't average DOWN toward a low morning METAR reading.
+        if local_hour < peak_hour:
+            # BEFORE PEAK: METAR can only RAISE the prediction.
+            # Don't drag DOWN toward a fog/cloud-suppressed reading.
             if current_high > model_pred:
+                blend = max(0.0, min(0.3, (local_hour - 8) / 20.0))
+                # FIX 6: During fog, reduce blend further (fog suppresses current temp)
+                if fog_detected:
+                    blend *= 0.3
                 final = (1 - blend) * model_pred + blend * current_high
             else:
-                final = model_pred  # Trust models in the morning
+                final = model_pred  # Trust models before peak hour
         else:
-            # AFTERNOON: Full blend — METAR high is increasingly the real answer
+            # AFTER PEAK: METAR high is increasingly definitive
+            blend = min(0.9, 0.5 + (local_hour - peak_hour) / 8.0)
+            if fog_detected:
+                blend *= 0.5  # Even after peak, discount fog-affected readings
             final = (1 - blend) * model_pred + blend * current_high
     else:
         final = model_pred
     
-    # Step 5: Dewpoint constraint
+    # Step 7: Dewpoint constraint
     if metar:
         dewpoint = getattr(metar, "dewpoint_f", None) if unit == "F" else getattr(metar, "dewpoint_c", None)
         if dewpoint is not None:
