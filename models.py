@@ -1228,7 +1228,7 @@ async def calculate_daily_high(models_data: Dict[str, ModelForecast], metar: Opt
     DEFAULT_MAE = {
         # Existing
         "gfs": 1.8, "ecmwf": 1.5, "icon": 2.0, "gem": 2.2, "jma": 2.0,
-        "nws": 1.5, "noaa_mos": 1.3, "visual_crossing": 2.0,
+        "nws": 1.5, "noaa_mos": 1.8, "visual_crossing": 2.5,
         # New
         "hrrr": 1.2,
         "nbm": 1.1,
