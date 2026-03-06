@@ -1290,14 +1290,6 @@ async def calculate_daily_high(models_data: Dict[str, ModelForecast], metar: Opt
         ensemble_weight = 1.0 / 1.3
         model_pred = (model_pred * total_w + ensemble_median * ensemble_weight) / (total_w + ensemble_weight)
     
-    # FIX 1: POSITIVE BIAS CORRECTION
-    # NWP models systematically underpredict daily highs by ~0.5-1.5°F due to
-    # grid-cell averaging, conservative physics, and inability to capture
-    # brief warm-air advection spikes. Apply empirically calibrated offset.
-    HIGH_BIAS_CORRECTION_F = 0.8
-    HIGH_BIAS_CORRECTION_C = 0.45
-    model_pred += HIGH_BIAS_CORRECTION_F if unit == "F" else HIGH_BIAS_CORRECTION_C
-    
     # FIX 3: P75 BLEND
     # Daily highs are MAXIMA, not means. A weighted average is biased toward
     # the center of the distribution. Blend toward P75 to correct for this.
@@ -1305,6 +1297,14 @@ async def calculate_daily_high(models_data: Dict[str, ModelForecast], metar: Opt
     p75_idx = int(len(sorted_vals) * 0.75)
     p75 = sorted_vals[min(p75_idx, len(sorted_vals) - 1)]
     model_pred = 0.65 * model_pred + 0.35 * p75
+    
+    # FIX 1: POSITIVE BIAS CORRECTION
+    # NWP models systematically underpredict daily highs by ~0.5-1.5°F due to
+    # grid-cell averaging, conservative physics, and inability to capture
+    # brief warm-air advection spikes. Apply empirically calibrated offset.
+    HIGH_BIAS_CORRECTION_F = 0.8
+    HIGH_BIAS_CORRECTION_C = 0.45
+    model_pred += HIGH_BIAS_CORRECTION_F if unit == "F" else HIGH_BIAS_CORRECTION_C
     
     # Step 4: METAR floor
     current_high = None
@@ -1322,30 +1322,6 @@ async def calculate_daily_high(models_data: Dict[str, ModelForecast], metar: Opt
             fog_detected = True
             logger.info("FOG detected at %s (vis=%.0fm) — reducing METAR blend", station, metar.visibility_m)
     
-    # Step 5: METAR trend projection
-    # IMPORTANT: Only apply trend projection after noon. Before noon, morning
-    # temperature dips from overnight fronts create false "falling" signals that
-    # incorrectly drag the prediction down. The real daily peak hasn't happened yet.
-    if local_hour >= 12 and metar_trend and metar_trend.get("projected_high"):
-        trend_pred = metar_trend["projected_high"]
-        
-        # Blend based on time of day and whether temp is rising
-        if local_hour >= 12 and metar_trend.get("is_rising"):
-            metar_trend_weight = 3.0
-        elif local_hour >= 14:
-            metar_trend_weight = 2.5
-        else:
-            metar_trend_weight = 1.5
-        
-        total_w_with_trend = total_w + metar_trend_weight
-        model_pred = ((model_pred * total_w) + (trend_pred * metar_trend_weight)) / total_w_with_trend
-    
-    # Step 6: PEAK-HOUR-AWARE METAR BLEND (FIX 4)
-    # CRITICAL: Before the expected peak heating hour, METAR can only RAISE
-    # the prediction. The old code started blending toward METAR at hour 8
-    # and gave it 42% weight by 1 PM — but at 1 PM the daily high often
-    # hasn't occurred (fog clearing, warm front passage, etc.).
-    # After peak hour, METAR high is increasingly definitive.
     current_month = date.today().month
     PEAK_HOURS = {
         "KMIA": {1:15, 2:15, 3:15, 4:15, 5:14, 6:14, 7:14, 8:14, 9:15, 10:15, 11:15, 12:15},
@@ -1365,6 +1341,35 @@ async def calculate_daily_high(models_data: Dict[str, ModelForecast], metar: Opt
         "YSSY": {1:15, 2:15, 3:15, 4:14, 5:14, 6:13, 7:13, 8:14, 9:14, 10:15, 11:15, 12:15},
     }
     peak_hour = PEAK_HOURS.get(station, {}).get(current_month, 15)
+
+    # Step 5: METAR trend projection
+    # IMPORTANT: Only apply trend projection after noon. Before noon, morning
+    # temperature dips from overnight fronts create false "falling" signals that
+    # incorrectly drag the prediction down. The real daily peak hasn't happened yet.
+    if local_hour >= 12 and metar_trend and metar_trend.get("projected_high"):
+        trend_pred = metar_trend["projected_high"]
+        
+        # Before peak hour: trend can only RAISE prediction (same logic as METAR blend)
+        if local_hour < peak_hour and trend_pred < model_pred:
+            pass  # Don't let a low trend drag prediction down before peak
+        else:
+            # Blend based on time of day and whether temp is rising
+            if local_hour >= 12 and metar_trend.get("is_rising"):
+                metar_trend_weight = 3.0
+            elif local_hour >= 14:
+                metar_trend_weight = 2.5
+            else:
+                metar_trend_weight = 1.5
+            
+            total_w_with_trend = total_w + metar_trend_weight
+            model_pred = ((model_pred * total_w) + (trend_pred * metar_trend_weight)) / total_w_with_trend
+    
+    # Step 6: PEAK-HOUR-AWARE METAR BLEND (FIX 4)
+    # CRITICAL: Before the expected peak heating hour, METAR can only RAISE
+    # the prediction. The old code started blending toward METAR at hour 8
+    # and gave it 42% weight by 1 PM — but at 1 PM the daily high often
+    # hasn't occurred (fog clearing, warm front passage, etc.).
+    # After peak hour, METAR high is increasingly definitive.
     
     if current_high is not None:
         if local_hour < peak_hour:

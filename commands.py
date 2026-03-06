@@ -483,7 +483,7 @@ async def cmd_city_analysis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 if len(ensemble_temps) > 10:
                     p10, p90 = np.percentile(ensemble_temps, [10, 90])
                     ensemble_spread = (p90 - p10) / 2.0
-                    uncertainty = min(uncertainty, ensemble_spread * 1.15)
+                    uncertainty = max(uncertainty, ensemble_spread * 1.15)
         else:
             uncertainty = 3.0 if unit == "F" else 1.5
 
