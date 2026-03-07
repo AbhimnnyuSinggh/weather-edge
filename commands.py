@@ -524,6 +524,14 @@ async def cmd_city_analysis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             high_so_far_val
         )
         
+        # Compute confidence label early (needed by analyze_market)
+        within_2_early = sum(1 for f in val_mods 
+                            if abs((f.bias_corrected_f if unit == "F" else f.bias_corrected_c) - predicted_high) <= 2.0)
+        conf_frac_early = within_2_early / max(1, len(val_mods))
+        if conf_frac_early >= 0.85: conf_lbl = "HIGH"
+        elif conf_frac_early >= 0.60: conf_lbl = "MEDIUM"
+        else: conf_lbl = "LOW"
+        
         # 8. Signals & Trades
         ws = await wallet_mod.get_capital_summary()
         total_cap = ws["total_value"]
