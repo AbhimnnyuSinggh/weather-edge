@@ -1264,6 +1264,26 @@ async def calculate_daily_high(models_data: Dict[str, ModelForecast], metar: Opt
     if not temps:
         return 0.0
     
+    # ── P4 FIX: MOS-specific early exclusion ──
+    # MOS can be 6-8°F off and still sneak through the general 10°F outlier
+    # threshold. A semi-stale MOS at MAE=1.8 still gets weight 0.56, enough
+    # to drag the average by ~0.3-0.5°F. Exclude it early if it deviates
+    # from the mean of other models by > 6°F.
+    if "noaa_mos" in temps:
+        other_temps = [t for n, t in temps.items() if n != "noaa_mos"]
+        if other_temps:
+            others_mean = sum(other_temps) / len(other_temps)
+            mos_deviation = abs(temps["noaa_mos"] - others_mean)
+            mos_threshold = 6.0 if unit == "F" else 3.3
+            if mos_deviation > mos_threshold:
+                logger.warning("MOS early exclusion: %.1f vs others mean %.1f (dev=%.1f > %.1f)",
+                              temps["noaa_mos"], others_mean, mos_deviation, mos_threshold)
+                del temps["noaa_mos"]
+                del weights["noaa_mos"]
+    
+    if not temps:
+        return 0.0
+    
     # OUTLIER DETECTION: Discard any model that is >10°F (or >5.5°C) from the median.
     # This prevents a single broken model (e.g. stale MOS) from corrupting the entire prediction.
     threshold = 10.0 if unit == "F" else 5.5

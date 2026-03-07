@@ -7,6 +7,11 @@ Handles all Telegram commands: /start, /status, /stations, /week, /today,
 
 import io
 import logging
+from datetime import date as _date_type
+
+# ── P6 FIX: Global portfolio state — prevents over-deployment across cities ──
+_session_deployed = 0.0
+_session_deployed_reset_date = None
 from datetime import datetime
 
 import pytz
@@ -484,11 +489,24 @@ async def cmd_city_analysis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 full_range = max(all_temps_list) - min(all_temps_list)
                 min_sigma = 1.5 if unit == "F" else 0.8
                 uncertainty = max(min_sigma, full_range / 2.0, uncertainty)
-                
-            # NOTE: Ensemble spread override REMOVED — model-spread sigma from
-            # 11 independent models already captures real uncertainty. GFS ensemble
-            # (31 members of one model) creates enormous p10-p90 spreads on transition
-            # days that blow up sigma to 10+°F, making bin probabilities useless.
+            
+            # ── P2 FIX: Detect bimodal distribution ──
+            # When models split into two camps (e.g., 8 say 40-41°F, 5 say 48-50°F),
+            # a single bell curve centered on the weighted average misrepresents
+            # the actual probability landscape. Widen sigma to cover both camps.
+            if all_temps_list and len(all_temps_list) >= 6:
+                sorted_at = sorted(all_temps_list)
+                mid = len(sorted_at) // 2
+                lower_half = sorted_at[:mid]
+                upper_half = sorted_at[mid:]
+                lower_mean = sum(lower_half) / len(lower_half)
+                upper_mean = sum(upper_half) / len(upper_half)
+                gap = upper_mean - lower_mean
+                bimodal_threshold = 4.0 if unit == "F" else 2.2
+                if gap > bimodal_threshold:
+                    uncertainty = max(uncertainty, gap * 0.75)
+                    logger.info("BIMODAL detected: lower camp=%.1f, upper camp=%.1f, gap=%.1f, new sigma=%.1f",
+                                lower_mean, upper_mean, gap, uncertainty)
         else:
             uncertainty = 3.0 if unit == "F" else 1.5
 
@@ -511,9 +529,25 @@ async def cmd_city_analysis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         total_cap = ws["total_value"]
         reserve = total_cap * 0.15
         
+        # ── P6 FIX: Global portfolio state — cap deployment across all cities ──
+        global _session_deployed, _session_deployed_reset_date
+        today_date = now_local.date()
+        if _session_deployed_reset_date != today_date:
+            _session_deployed = 0.0
+            _session_deployed_reset_date = today_date
+        remaining_budget = max(0, (total_cap * 0.25) - _session_deployed)
+        effective_cap = min(total_cap, remaining_budget + reserve)  # Never exceed 25% daily deployment
+        
         if market_group and market_group.bins:
-            trade_instructions, deployed = signals.analyze_market(market_group, probs, total_cap, now_local.hour)
-            deployable = max(0, total_cap - reserve) # Initial deployable
+            trade_instructions, deployed = signals.analyze_market(
+                market_group, probs, effective_cap, now_local.hour,
+                predicted_high=predicted_high,
+                models_data=models_data,
+                metar_high=high_so_far_val,
+                confidence=conf_lbl
+            )
+            _session_deployed += deployed  # Track cumulative deployment
+            deployable = max(0, effective_cap - reserve)
             remaining = max(0, deployable - deployed)
         else:
             trade_instructions, deployed, deployable, remaining = {}, 0, 0, 0

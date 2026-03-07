@@ -47,10 +47,21 @@ class Signal:
 # ---------------------------------------------------------------------------
 # City Dashboard - Trade Analysis
 # ---------------------------------------------------------------------------
-def analyze_market(market_group: MarketGroup, probs: Dict[str, float], total_cap: float, local_hour: int) -> tuple[Dict[str, dict], float]:
+def analyze_market(market_group: MarketGroup, probs: Dict[str, float], total_cap: float, local_hour: int,
+                   predicted_high=None, models_data=None, metar_high=None, confidence="HIGH") -> tuple[Dict[str, dict], float]:
     """
     Analyze the market active bins vs calculated probabilities to generate
     specific trade recommendations for the City Dashboard.
+    
+    Args:
+        market_group: Market bins and prices
+        probs: Dict of bin probabilities from our distribution
+        total_cap: Total capital available
+        local_hour: Current local hour at the station
+        predicted_high: Bot's predicted daily high (P1 fix)
+        models_data: Dict of model forecasts (P1 fix)
+        metar_high: Current METAR observed high (P3 fix)
+        confidence: "HIGH", "MEDIUM", or "LOW" (P7 fix)
     
     Returns:
        Dict mapped by trade type: { type_key: { ... data ... } }
@@ -75,8 +86,22 @@ def analyze_market(market_group: MarketGroup, probs: Dict[str, float], total_cap
     if not sorted_bins:
         return trades, 0
 
+    # ── P7 FIX: Confidence-based thresholds ──
+    # LOW confidence → require larger edge, smaller allocation, discounted EV
+    if confidence == "LOW":
+        yes_edge_threshold = 0.20   # Require 20% edge instead of 10%
+        yes_alloc_pct = 5           # 5% allocation instead of 15%
+        ev_discount = 0.5           # 50% haircut on EV
+    elif confidence == "MEDIUM":
+        yes_edge_threshold = 0.15
+        yes_alloc_pct = 10
+        ev_discount = 0.75
+    else:  # HIGH
+        yes_edge_threshold = 0.10
+        yes_alloc_pct = 15
+        ev_discount = 1.0
+
     # 1. FORECAST YES
-    # Need > 10% edge.
     best_fc_bin = None
     best_fc_edge = 0
     for b in sorted_bins:
@@ -86,17 +111,45 @@ def analyze_market(market_group: MarketGroup, probs: Dict[str, float], total_cap
         mkt_price = b.yes_price
         edge = prob - mkt_price
         
-        if edge > 0.10 and edge > best_fc_edge:
-            if b.yes_price <= 0.30: # from config
+        if edge > yes_edge_threshold and edge > best_fc_edge:
+            if b.yes_price <= 0.30:
+                # ── P1 FIX: Check if any model actually supports this bin ──
+                if models_data and predicted_high is not None:
+                    bin_low = b.bin.low if b.bin.low is not None else -999
+                    bin_high = b.bin.high if b.bin.high is not None else 999
+                    model_support = 0
+                    near_support = 0
+                    for name, fc in models_data.items():
+                        if not fc: continue
+                        t = getattr(fc, 'bias_corrected_f', None)
+                        if t is not None:
+                            if bin_low <= t < bin_high:
+                                model_support += 1
+                            elif (bin_low - 1) <= t < (bin_high + 1):
+                                near_support += 1
+                    if model_support == 0 and near_support < 2:
+                        logger.info("P1: Skipping bin %s — no model supports it (support=%d, near=%d)",
+                                   lbl, model_support, near_support)
+                        continue  # Skip bin — no model supports it
+                
                 best_fc_edge = edge
                 best_fc_bin = b
+    
+    # ── P3 FIX: Don't recommend YES on a bin the METAR floor has nearly eliminated ──
+    if metar_high is not None and best_fc_bin:
+        bin_high_val = best_fc_bin.bin.high if best_fc_bin.bin.high is not None else 999
+        if bin_high_val <= metar_high + 1:
+            logger.info("P3: Skipping bin %s — METAR floor (%.0f°F) has reached this bin",
+                       best_fc_bin.bin.label, metar_high)
+            trades["forecast_yes"]["skip_reason"] = f"METAR floor ({metar_high:.0f}°F) has reached this bin. High is likely above it."
+            best_fc_bin = None
                 
     if best_fc_bin:
         lbl = best_fc_bin.bin.label
         prob = probs.get(lbl, 0)
         mkt_price = best_fc_bin.yes_price
         
-        alloc_pct = 15
+        alloc_pct = yes_alloc_pct  # P7: confidence-adjusted allocation
         alloc_amount = max_deployable * (alloc_pct / 100.0)
         shares = alloc_amount / mkt_price
         # Floor shares realistically:
@@ -106,8 +159,11 @@ def analyze_market(market_group: MarketGroup, probs: Dict[str, float], total_cap
         profit = payout - cost
         ev = (prob * profit) - ((1.0 - prob) * cost)
         
+        # ── P5 FIX: Apply confidence discount to EV ──
+        adjusted_ev = ev * ev_discount
+        
         # Guard against math errors
-        if ev <= 100:
+        if adjusted_ev <= 100:
             trades["forecast_yes"] = {
                 "valid": True,
                 "label": "FORECAST YES (Growth Engine)",
@@ -124,13 +180,13 @@ def analyze_market(market_group: MarketGroup, probs: Dict[str, float], total_cap
                 "profit": profit,
                 "win_prob": int(prob * 100),
                 "lose_prob": int((1.0 - prob) * 100),
-                "ev": ev,
+                "ev": adjusted_ev,
                 "edge": int(best_fc_edge * 100),
                 "timing_advice": "Place now. Price likely rises as afternoon approaches and models confirm. Early entry = cheaper shares = bigger profit."
             }
             
-    # 2. LADDER
-    # Look for 2 adjacent bins with edge > 5% and combined prob > 60%
+    # 2. LADDER (P8 FIX: Relaxed thresholds + METAR floor awareness)
+    # Look for 2 adjacent bins with combined prob > 40% and some edge
     for i in range(len(sorted_bins) - 1):
         b1 = sorted_bins[i]
         b2 = sorted_bins[i+1]
@@ -144,7 +200,14 @@ def analyze_market(market_group: MarketGroup, probs: Dict[str, float], total_cap
         edge1 = p1 - m1
         edge2 = p2 - m2
         
-        if edge1 > 0.05 and edge2 > 0.05 and (p1 + p2) > 0.60:
+        # ── P8 FIX: Relaxed conditions — combined > 40%, at least one has 3% edge ──
+        if (p1 + p2) > 0.40 and (edge1 > 0.03 or edge2 > 0.03) and (m1 + m2) < 0.50:
+            # P3: Skip if METAR floor has passed the lower bin
+            if metar_high is not None:
+                b1_high = b1.bin.high if b1.bin.high is not None else 999
+                if b1_high <= metar_high:
+                    continue  # METAR has already passed this bin
+            
             alloc_pct = 10
             alloc_amount = max_deployable * (alloc_pct / 100.0)
             alloc_per_rung = alloc_amount / 2.0
@@ -157,7 +220,7 @@ def analyze_market(market_group: MarketGroup, probs: Dict[str, float], total_cap
             cost2 = shares2 * m2
             ev2 = (p2 * shares2 * 1.0) - cost2
             
-            total_ev = ev1 + ev2
+            total_ev = (ev1 + ev2) * ev_discount  # P5: confidence discount
             total_cost = cost1 + cost2
             avg_win_prob = (p1 + p2)
             
@@ -207,8 +270,9 @@ def analyze_market(market_group: MarketGroup, probs: Dict[str, float], total_cap
                 payout = shares * 1.0
                 profit = payout - cost
                 ev = (prob * profit) - ((1.0 - prob) * cost)
+                adjusted_ev = ev * ev_discount  # P5
                 
-                if ev <= 100:
+                if adjusted_ev <= 100:
                     trades["lockin"] = {
                         "valid": True,
                         "label": "LOCK-IN YES (Bread & Butter)",
@@ -221,19 +285,16 @@ def analyze_market(market_group: MarketGroup, probs: Dict[str, float], total_cap
                         "alloc_amount": alloc_amount,
                         "shares": shares,
                         "cost": cost,
-                        "payout": payout, # Only one payout per share
+                        "payout": payout,
                         "profit": profit,
                         "win_prob": int(prob * 100),
                         "lose_prob": int((1.0 - prob) * 100),
-                        "ev": ev,
+                        "ev": adjusted_ev,
                         "edge": int(edge * 100),
                         "timing_advice": "Wait for afternoon METAR to confirm peak before sizing up."
                     }
 
     # 4. NO TAIL
-    # After 2PM checking happens upstream via METAR data check. We don't have METAR here,
-    # so we assume if we have a bin >2 ranges above highest prob bin with probability < 5% but market price > 10%
-        
     if highest_prob_bin_idx >= 0 and local_hour >= 14:
         for i in range(highest_prob_bin_idx + 2, len(sorted_bins)):
             b = sorted_bins[i]
@@ -251,7 +312,7 @@ def analyze_market(market_group: MarketGroup, probs: Dict[str, float], total_cap
                     shares = alloc_amount / no_price
                     shares = float(int(shares))
                     cost = shares * no_price
-                    profit = shares * mkt_price # NO payout = initial YES price per share
+                    profit = shares * mkt_price
                     ev = (no_prob * profit) - ((1.0 - no_prob) * cost)
                     if ev <= 100:
                         trades["no_tail"] = {
@@ -280,4 +341,3 @@ def analyze_market(market_group: MarketGroup, probs: Dict[str, float], total_cap
     deployed = sum(t["cost"] for t in trades.values() if t.get("valid"))
     
     return trades, deployed
-
